@@ -3,6 +3,7 @@
  * et OTP_DEV_FIXED_CODE=123456. Lancer : `pnpm test:e2e`.
  */
 import { Redis } from 'ioredis';
+import pg from 'pg';
 import { io, type Socket } from 'socket.io-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -32,6 +33,22 @@ async function call<T = any>(method: string, path: string, token?: string, body?
   });
   const text = await res.text();
   return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
+}
+
+const REQUIRED_DOCUMENTS = ['cin', 'driving_license', 'vehicle_registration', 'insurance'];
+const fakeImage = () => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(randomDigits(64))]);
+
+/** Envoi multipart d'une pièce justificative. */
+async function upload(token: string, fields: Record<string, string | undefined>, content: Buffer) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) if (value !== undefined) form.set(key, value);
+  form.set('file', new Blob([new Uint8Array(content)]), 'scan.png');
+  const res = await fetch(`${API}/v1/drivers/me/documents`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+    body: form,
+  });
+  return { status: res.status, body: (await res.json()) as any };
 }
 
 async function login(phone: string): Promise<Session> {
@@ -68,6 +85,7 @@ const randomDigits = (n: number) => Array.from({ length: n }, () => Math.floor(M
 describe('parcours passager ↔ chauffeur', () => {
   let admin: Session, driver: Session, passenger: Session;
   let driverSocket: Socket, passengerSocket: Socket;
+  let completedTrip: { id: string; price: number };
 
   beforeAll(async () => {
     // Remet à zéro les limites d'envoi d'OTP (le numéro admin est réutilisé à chaque exécution).
@@ -120,7 +138,69 @@ describe('parcours passager ↔ chauffeur', () => {
     expect(early.body.code).toBe('DRIVER_NOT_APPROVED');
 
     expect((await call('POST', `/admin/drivers/${driver.userId}/approve`, passenger.token)).status).toBe(403);
+
+    // Pièces obligatoires (config par défaut) : sans elles, l'approbation est refusée
+    const incomplete = await call('POST', `/admin/drivers/${driver.userId}/approve`, admin.token);
+    expect(incomplete.status).toBe(409);
+    expect(incomplete.body.code).toBe('DOCUMENTS_INCOMPLETE');
+    expect([...incomplete.body.details.missing].sort()).toEqual([...REQUIRED_DOCUMENTS].sort());
+
+    // Contrôles à l'envoi : contenu réel du fichier, assurance datée, réservé aux chauffeurs
+    const fakePng = await upload(driver.token, { type: 'cin' }, Buffer.from('ceci n’est pas une image'));
+    expect(fakePng.body.code).toBe('DOCUMENT_INVALID_TYPE');
+    expect((await upload(driver.token, { type: 'insurance' }, fakeImage())).body.code).toBe('VALIDATION_FAILED');
+    expect((await upload(passenger.token, { type: 'cin' }, fakeImage())).body.code).toBe('NOT_A_DRIVER');
+
+    for (const type of REQUIRED_DOCUMENTS) {
+      const fields = type === 'insurance' ? { type, expiresAt: '2030-01-01' } : { type };
+      const sent = await upload(driver.token, fields, fakeImage());
+      expect(sent.status).toBe(201);
+      expect(sent.body.status).toBe('pending');
+      expect(sent.body.storageKey).toBeUndefined();
+    }
+    // Dossier complet : il entre dans la file de validation de l'admin
+    expect((await call('GET', '/drivers/me', driver.token)).body.status).toBe('under_review');
+    const pending = await call('GET', '/admin/drivers/pending', admin.token);
+    expect(pending.body.map((d: any) => d.userId)).toContain(driver.userId);
+
+    const detail = await call('GET', `/admin/drivers/${driver.userId}`, admin.token);
+    expect(detail.status).toBe(200);
+    expect(detail.body.cin).toMatch(/^\*{5}\d{3}$/);
+    expect(detail.body.documents).toHaveLength(REQUIRED_DOCUMENTS.length);
+    expect(detail.body.missingForApproval).toHaveLength(REQUIRED_DOCUMENTS.length);
+
+    // Le scan n'est lisible que par un admin, via la route authentifiée
+    const cinDoc = detail.body.documents.find((d: any) => d.type === 'cin');
+    const file = await fetch(`${API}/v1/admin/drivers/${driver.userId}/documents/${cinDoc.id}/file`, {
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toBe('image/png');
+    expect(file.headers.get('cache-control')).toContain('no-store');
+    const driverAttempt = await fetch(`${API}/v1/admin/drivers/${driver.userId}/documents/${cinDoc.id}/file`, {
+      headers: { authorization: `Bearer ${driver.token}` },
+    });
+    expect(driverAttempt.status).toBe(403);
+
+    // Un document refusé renvoie le dossier au chauffeur, qui le remplace
+    const docUrl = (id: string, action: string) => `/admin/drivers/${driver.userId}/documents/${id}/${action}`;
+    const rejectedNotice = next(driverSocket, 'notification:new', (n) => n.type === 'driver.document_rejected');
+    expect((await call('POST', docUrl(cinDoc.id, 'reject'), admin.token, { reason: 'Photo floue' })).body.status).toBe('rejected');
+    expect((await rejectedNotice).payload.body).toContain('Photo floue');
+    expect((await call('POST', docUrl(cinDoc.id, 'approve'), admin.token)).body.code).toBe('DOCUMENT_ALREADY_REVIEWED');
+    expect((await call('GET', '/drivers/me', driver.token)).body.status).toBe('pending_documents');
+    expect((await upload(driver.token, { type: 'cin' }, fakeImage())).status).toBe(201);
+    expect((await call('GET', '/drivers/me', driver.token)).body.status).toBe('under_review');
+
+    // Tant que tout n'est pas approuvé pièce par pièce, pas d'approbation du chauffeur
+    expect((await call('POST', `/admin/drivers/${driver.userId}/approve`, admin.token)).body.code).toBe('DOCUMENTS_INCOMPLETE');
+    const docs = (await call('GET', `/admin/drivers/${driver.userId}`, admin.token)).body.documents as any[];
+    for (const doc of docs) {
+      expect((await call('POST', docUrl(doc.id, 'approve'), admin.token)).body.status).toBe('approved');
+    }
+    const approvedNotice = next(driverSocket, 'notification:new', (n) => n.type === 'driver.approved');
     expect((await call('POST', `/admin/drivers/${driver.userId}/approve`, admin.token)).status).toBe(200);
+    expect((await approvedNotice).payload.title).toBe('Compte chauffeur validé');
 
     expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
     const ack = await driverSocket.emitWithAck('driver:location', { ...TUNIS_CENTRE, ts: Date.now() });
@@ -153,24 +233,185 @@ describe('parcours passager ↔ chauffeur', () => {
     expect(offer.trip.price).toBe(estimate.body.price);
 
     const assignedPromise = next(passengerSocket, 'trip:updated', (t) => t.status === 'driver_assigned');
+    const notifiedPromise = next(passengerSocket, 'notification:new', (n) => n.type === 'trip.driver_assigned');
     expect((await call('POST', `/trips/${trip.body.id}/accept`, driver.token)).status).toBe(200);
     const assigned = await assignedPromise;
     expect(assigned.driver.vehicle.plate).toMatch(/TU/);
     expect(assigned.driver.phone).toBeUndefined();
+    // ETA du chauffeur vers le point de prise en charge, d'après sa dernière position connue
+    expect(assigned.driverEta.distanceM).toBeLessThan(3_000);
+    expect(assigned.driverEta.durationS).toBeGreaterThan(0);
+    const notified = await notifiedPromise;
+    expect(notified.payload.title).toBe('Chauffeur en route');
+    expect(notified.payload.data).toMatchObject({ tripId: trip.body.id, status: 'driver_assigned' });
 
     // Position du chauffeur relayée au passager pendant la course
     const locPromise = next(passengerSocket, 'driver:location');
     await driverSocket.emitWithAck('driver:location', { ...PICKUP, ts: Date.now() });
     expect((await locPromise).tripId).toBe(trip.body.id);
 
+    // Trace GPS : un lot rejoué (retry réseau après une réponse perdue) ne crée pas de doublons
+    const t0 = Date.now();
+    const batch = { points: [1, 2, 3].map((i) => ({ lat: PICKUP.lat + i * 0.0002, lng: PICKUP.lng, ts: t0 + i * 1_000 })) };
+    expect((await call('POST', '/drivers/me/location', driver.token, batch)).status).toBe(200);
+    expect((await call('POST', '/drivers/me/location', driver.token, batch)).status).toBe(200);
+
     expect((await call('POST', `/trips/${trip.body.id}/arrived`, driver.token)).body.status).toBe('driver_arrived');
     expect((await call('POST', `/trips/${trip.body.id}/start`, driver.token)).body.status).toBe('in_progress');
     const done = await call('POST', `/trips/${trip.body.id}/complete`, driver.token);
     expect(done.body.status).toBe('completed');
     expect(done.body.finalPrice).toBe(estimate.body.price);
+    expect(done.body.payment).toEqual({ method: 'cash', amount: estimate.body.price, status: 'pending' });
+    completedTrip = { id: trip.body.id, price: estimate.body.price };
 
     const me = await call('GET', '/drivers/me', driver.token);
     expect(me.body.presence.status).toBe('online');
+  });
+
+  it('paiement cash : seul le chauffeur confirme l’encaissement, de façon idempotente', async () => {
+    const { id, price } = completedTrip;
+    expect((await call('POST', `/trips/${id}/cash-collected`, passenger.token)).status).toBe(404);
+
+    const paidPromise = next(passengerSocket, 'trip:updated', (t) => t.payment?.status === 'succeeded');
+    const first = await call('POST', `/trips/${id}/cash-collected`, driver.token);
+    expect(first.status).toBe(200);
+    expect(first.body.payment).toEqual({ method: 'cash', amount: price, status: 'succeeded' });
+    await paidPromise;
+
+    expect((await call('POST', `/trips/${id}/cash-collected`, driver.token)).body.payment.status).toBe('succeeded');
+    expect((await call('GET', `/trips/${id}`, passenger.token)).body.payment.status).toBe('succeeded');
+  });
+
+  it('notation bidirectionnelle : une note par participant, moyenne mise à jour', async () => {
+    const { id } = completedTrip;
+    expect((await call('POST', `/trips/${id}/rating`, passenger.token, { score: 6 })).status).toBe(400);
+
+    const byPassenger = await call('POST', `/trips/${id}/rating`, passenger.token, { score: 5, comment: 'Très bien' });
+    expect(byPassenger.status).toBe(201);
+    expect(byPassenger.body.rateeId).toBe(driver.userId);
+    expect((await call('POST', `/trips/${id}/rating`, passenger.token, { score: 1 })).body.code).toBe('ALREADY_RATED');
+
+    const byDriver = await call('POST', `/trips/${id}/rating`, driver.token, { score: 4 });
+    expect(byDriver.body.rateeId).toBe(passenger.userId);
+
+    const driverMe = await call('GET', '/me', driver.token);
+    expect(driverMe.body.ratingCount).toBe(1);
+    expect(Number(driverMe.body.ratingAvg)).toBe(5);
+    expect(Number((await call('GET', '/me', passenger.token)).body.ratingAvg)).toBe(4);
+  });
+
+  it('trace GPS : visible des participants et du back-office, sans doublons', async () => {
+    const { id } = completedTrip;
+    for (const token of [passenger.token, driver.token]) {
+      const track = await call('GET', `/trips/${id}/track`, token);
+      expect(track.status).toBe(200);
+      expect(track.body.status).toBe('completed');
+      // 1 point du socket + 3 du lot HTTP (rejoué deux fois)
+      expect(track.body.points).toHaveLength(4);
+      const times = track.body.points.map((p: any) => p.ts);
+      expect(times).toEqual([...times].sort((a, b) => a - b));
+      expect(track.body.travelledDistanceM).toBeGreaterThan(50);
+    }
+
+    // Un admin non participant n'a pas accès par la route des participants, mais par celle du back-office
+    expect((await call('GET', `/trips/${id}/track`, admin.token)).status).toBe(404);
+    const audit = await call('GET', `/admin/trips/${id}/track`, admin.token);
+    expect(audit.status).toBe(200);
+    expect(audit.body.points).toHaveLength(4);
+    expect((await call('GET', `/admin/trips/${id}/track`, passenger.token)).status).toBe(403);
+  });
+
+  it('notifications : boîte de réception, lecture, pagination', async () => {
+    const inbox = await call('GET', '/notifications', passenger.token);
+    expect(inbox.status).toBe(200);
+    const types = inbox.body.items.map((n: any) => n.type);
+    expect(types).toEqual(expect.arrayContaining(['trip.driver_assigned', 'trip.driver_arrived', 'trip.completed']));
+    expect(inbox.body.unread).toBeGreaterThanOrEqual(3);
+
+    const completed = inbox.body.items.find((n: any) => n.type === 'trip.completed');
+    expect(completed.payload.body).toMatch(/DT/);
+    expect(completed.payload.data.tripId).toBe(completedTrip.id);
+    expect(completed.readAt).toBeNull();
+
+    // Les offres ne vont que sur push et temps réel, jamais dans la boîte de réception
+    const driverTypes = (await call('GET', '/notifications?limit=50', driver.token)).body.items.map((n: any) => n.type);
+    expect(driverTypes).not.toContain('trip.offer');
+    expect(driverTypes).not.toContain('trip.driver_assigned');
+
+    const read = await call('POST', `/notifications/${completed.id}/read`, passenger.token);
+    expect(read.body.readAt).not.toBeNull();
+    expect((await call('POST', `/notifications/${completed.id}/read`, passenger.token)).body.readAt).toBe(read.body.readAt);
+    expect((await call('POST', `/notifications/${completed.id}/read`, driver.token)).status).toBe(404);
+
+    const page1 = await call('GET', '/notifications?limit=1', passenger.token);
+    expect(page1.body.items).toHaveLength(1);
+    const page2 = await call('GET', `/notifications?cursor=${encodeURIComponent(page1.body.nextCursor)}`, passenger.token);
+    expect(page2.body.items.map((n: any) => n.id)).not.toContain(page1.body.items[0].id);
+
+    expect((await call('POST', '/notifications/read-all', passenger.token)).status).toBe(204);
+    expect((await call('GET', '/notifications', passenger.token)).body.unread).toBe(0);
+    expect((await call('GET', '/notifications?limit=500', passenger.token)).status).toBe(400);
+  });
+
+  it('appareils push : enregistrement, changement de compte, suppression', async () => {
+    const token = `ExponentPushToken[${randomDigits(20)}]`;
+    const owner = async () => {
+      const db = new pg.Client({ connectionString: process.env.DATABASE_URL ?? 'postgres://vtc:vtc@localhost:5433/vtc' });
+      await db.connect();
+      try {
+        return (await db.query('SELECT user_id FROM device_tokens WHERE token = $1', [token])).rows[0]?.user_id as string | undefined;
+      } finally {
+        await db.end();
+      }
+    };
+
+    expect((await call('PUT', '/notifications/devices', passenger.token, { token, platform: 'web' })).status).toBe(400);
+    expect((await call('PUT', '/notifications/devices', passenger.token, { token, platform: 'android' })).status).toBe(204);
+    expect(await owner()).toBe(passenger.userId);
+
+    // Même appareil, autre compte : le jeton change de propriétaire (plus de notifications de l'ancien compte)
+    expect((await call('PUT', '/notifications/devices', driver.token, { token, platform: 'android' })).status).toBe(204);
+    expect(await owner()).toBe(driver.userId);
+
+    const encoded = encodeURIComponent(token);
+    expect((await call('DELETE', `/notifications/devices?token=${encoded}`, passenger.token)).status).toBe(204);
+    expect(await owner()).toBe(driver.userId); // pas le sien : sans effet
+    expect((await call('DELETE', `/notifications/devices?token=${encoded}`, driver.token)).status).toBe(204);
+    expect(await owner()).toBeUndefined();
+  });
+
+  it('notation refusée tant que la course n’est pas terminée', async () => {
+    const estimate = await call('POST', '/trips/estimate', passenger.token, { pickup: PICKUP, dropoff: LA_MARSA });
+    const trip = await call('POST', '/trips', passenger.token, { quoteId: estimate.body.quoteId });
+    expect((await call('POST', `/trips/${trip.body.id}/rating`, passenger.token, { score: 5 })).body.code).toBe(
+      'TRIP_NOT_COMPLETED',
+    );
+    await call('POST', `/trips/${trip.body.id}/cancel`, passenger.token, {});
+  });
+
+  it('historique paginé, du plus récent au plus ancien, avec l’autre partie', async () => {
+    const page1 = await call('GET', '/trips?limit=1', passenger.token);
+    expect(page1.status).toBe(200);
+    expect(page1.body.items).toHaveLength(1);
+    expect(page1.body.nextCursor).toBeTruthy();
+
+    const page2 = await call('GET', `/trips?limit=50&cursor=${encodeURIComponent(page1.body.nextCursor)}`, passenger.token);
+    expect(page2.body.items.length).toBeGreaterThan(0);
+    expect(page2.body.items.map((t: any) => t.id)).not.toContain(page1.body.items[0].id);
+
+    const all = (await call('GET', '/trips', passenger.token)).body.items as any[];
+    const done = all.find((t) => t.id === completedTrip.id);
+    expect(done.counterpart.id).toBe(driver.userId);
+    expect(done.vehicle.plate).toMatch(/TU/);
+    expect(done.myRating).toBe(5);
+
+    const driverView = (await call('GET', '/trips', driver.token)).body.items as any[];
+    const asDriver = driverView.find((t) => t.id === completedTrip.id);
+    expect(asDriver.counterpart.id).toBe(passenger.userId);
+    expect(asDriver.vehicle).toBeNull();
+    expect(asDriver.myRating).toBe(4);
+
+    expect((await call('GET', '/trips?limit=500', passenger.token)).status).toBe(400);
   });
 
   it("annulation passager pendant l'offre : gratuite, l'offre est retirée au chauffeur", async () => {
@@ -203,6 +444,19 @@ describe('parcours passager ↔ chauffeur', () => {
     await call('POST', `/trips/${trip.body.id}/cancel`, passenger.token, {});
   });
 
+  it('annulation par le chauffeur : le passager est notifié', async () => {
+    const estimate = await call('POST', '/trips/estimate', passenger.token, { pickup: PICKUP, dropoff: LA_MARSA });
+    const offerPromise = next(driverSocket, 'trip:offer');
+    const trip = await call('POST', '/trips', passenger.token, { quoteId: estimate.body.quoteId });
+    await offerPromise;
+    expect((await call('POST', `/trips/${trip.body.id}/accept`, driver.token)).status).toBe(200);
+
+    const notified = next(passengerSocket, 'notification:new', (n) => n.type === 'trip.cancelled_by_driver');
+    const cancelled = await call('POST', `/trips/${trip.body.id}/cancel`, driver.token, { reason: 'panne' });
+    expect(cancelled.body.status).toBe('cancelled_by_driver');
+    expect((await notified).payload.data.tripId).toBe(trip.body.id);
+  });
+
   it("offre sans réponse : expire après MATCHING_OFFER_TIMEOUT_S et n'est plus acceptable", async () => {
     const estimate = await call('POST', '/trips/estimate', passenger.token, { pickup: PICKUP, dropoff: LA_MARSA });
     const offerPromise = next(driverSocket, 'trip:offer');
@@ -216,6 +470,67 @@ describe('parcours passager ↔ chauffeur', () => {
 
     await call('POST', `/trips/${trip.body.id}/cancel`, passenger.token, {});
   }, 25_000);
+
+  it("signalement d'incident : rattaché à une course, pris en charge par un admin", async () => {
+    const report = { category: 'incident', description: 'Le chauffeur a pris un autre itinéraire', tripId: completedTrip.id };
+    expect((await call('POST', '/support/tickets', passenger.token, { ...report, description: 'ok' })).status).toBe(400);
+    // Une course dont on n'est pas participant reste introuvable
+    expect((await call('POST', '/support/tickets', admin.token, report)).status).toBe(404);
+
+    const created = await call('POST', '/support/tickets', passenger.token, report);
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe('open');
+    const id = created.body.id;
+    expect((await call('GET', '/support/tickets', passenger.token)).body.map((t: any) => t.id)).toContain(id);
+    expect((await call('GET', '/support/tickets', driver.token)).body.map((t: any) => t.id)).not.toContain(id);
+
+    expect((await call('GET', '/admin/tickets', passenger.token)).status).toBe(403);
+    const queue = await call('GET', '/admin/tickets?status=open&limit=50', admin.token);
+    const listed = queue.body.items.find((t: any) => t.id === id);
+    expect(listed.reporter.id).toBe(passenger.userId);
+    expect(listed.tripStatus).toBe('completed');
+
+    const ticketNotice = next(passengerSocket, 'notification:new', (n) => n.type === 'support.ticket_updated');
+    const taken = await call('PATCH', `/admin/tickets/${id}`, admin.token, { status: 'in_progress' });
+    expect(taken.body.assignedTo).toBe(admin.userId);
+    expect((await ticketNotice).payload.body).toContain('en cours');
+    const resolved = await call('PATCH', `/admin/tickets/${id}`, admin.token, { status: 'resolved' });
+    expect(resolved.body).toMatchObject({ status: 'resolved', assignedTo: admin.userId });
+    expect((await call('GET', '/support/tickets', passenger.token)).body.find((t: any) => t.id === id).status).toBe('resolved');
+    expect((await call('PATCH', `/admin/tickets/${id}`, admin.token, { status: 'nope' })).status).toBe(400);
+  });
+
+  it('adresses : autocomplétion (français et arabe) et géocodage inverse', async () => {
+    const search = (query: string) => call('GET', `/places/search?${query}`, passenger.token);
+    expect((await call('GET', '/places/search?q=marsa')).status).toBe(401);
+
+    const marsa = await search('q=marsa');
+    expect(marsa.status).toBe(200);
+    expect(marsa.body[0]).toMatchObject({ name: 'La Marsa', lat: expect.any(Number), lng: expect.any(Number) });
+    expect((await search(`q=${encodeURIComponent('المرسى')}`)).body[0].name).toBe('La Marsa');
+
+    // La position de l'utilisateur ne filtre pas, elle classe : l'aéroport le plus proche d'abord
+    expect((await search('q=aeroport&lat=34.74&lng=10.76')).body[0].name).toBe('Aéroport Sfax-Thyna');
+    expect((await search('q=aeroport&limit=1')).body).toHaveLength(1);
+
+    expect((await search('q=a')).status).toBe(400);
+    expect((await search('q=marsa&lat=36.8')).status).toBe(400);
+    expect((await search('q=marsa&lat=48.85&lng=2.35')).body.code).toBe('OUT_OF_SERVICE_AREA');
+
+    const reverse = await call('GET', '/places/reverse?lat=36.879&lng=10.325', passenger.token);
+    expect(reverse.body.place.name).toBe('La Marsa');
+    expect((await call('GET', '/places/reverse?lat=31&lng=9', passenger.token)).body.place).toBeNull();
+    expect((await call('GET', '/places/reverse?lat=48.85&lng=2.35', passenger.token)).status).toBe(400);
+
+    // Le lieu choisi alimente directement un devis
+    const { lat, lng, name, address } = marsa.body[0];
+    const estimate = await call('POST', '/trips/estimate', passenger.token, {
+      pickup: PICKUP,
+      dropoff: { lat, lng },
+      dropoffAddress: `${name}, ${address}`,
+    });
+    expect(estimate.status).toBe(200);
+  });
 
   it('refresh token : rotation puis déconnexion', async () => {
     const rotated = await call('POST', '/auth/refresh', undefined, { refreshToken: passenger.refreshToken });

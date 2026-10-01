@@ -8,6 +8,9 @@ import { AuthModule } from './modules/auth/auth.module.js';
 import { Public } from './modules/auth/auth.guard.js';
 import { DriversModule } from './modules/drivers/drivers.module.js';
 import { MatchingModule } from './modules/matching/matching.module.js';
+import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { PlacesModule } from './modules/places/places.module.js';
+import { SupportModule } from './modules/support/support.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.server.js';
 import { TripsModule } from './modules/trips/trips.module.js';
 import { UsersModule } from './modules/users/users.module.js';
@@ -29,7 +32,7 @@ class HealthController {
 }
 
 @Module({
-  imports: [InfraModule, AuthModule, UsersModule, DriversModule, MatchingModule, TripsModule, RealtimeModule, AdminModule],
+  imports: [InfraModule, AuthModule, NotificationsModule, UsersModule, DriversModule, MatchingModule, TripsModule, PlacesModule, RealtimeModule, SupportModule, AdminModule],
   controllers: [HealthController],
 })
 export class AppModule {}

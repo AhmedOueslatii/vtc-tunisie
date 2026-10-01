@@ -6,6 +6,7 @@ import { DB, type Db } from '../../db/db.js';
 import { tripEvents, tripOffers, trips, users } from '../../db/schema.js';
 import { MATCHING_QUEUE, RealtimeEmitter } from '../../infra/infra.module.js';
 import { PresenceService } from '../drivers/presence.service.js';
+import { NotificationsService } from '../notifications/notifications.module.js';
 
 type OfferOutcome = 'declined' | 'expired' | 'cancelled';
 
@@ -26,6 +27,7 @@ export class MatchingService {
     @Inject(MATCHING_QUEUE) private readonly queue: Queue,
     private readonly presence: PresenceService,
     private readonly realtime: RealtimeEmitter,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async enqueueDispatch(tripId: string, delayMs = 0): Promise<void> {
@@ -93,6 +95,13 @@ export class MatchingService {
             passenger: { firstName: passenger?.fullName?.split(' ')[0] ?? null, rating: passenger?.ratingAvg ?? null },
           },
         });
+        // Push en plus du temps réel : l'app chauffeur peut être en arrière-plan.
+        void this.notifications.notify(
+          candidate.driverId,
+          'trip.offer',
+          { distanceM: candidate.distanceM, price: trip.quotedPrice },
+          { tripId, offerId: offer!.id },
+        );
         this.logger.log(`course ${tripId} → offre au chauffeur ${candidate.driverId} (${candidate.distanceM} m)`);
         return;
       }
@@ -111,6 +120,7 @@ export class MatchingService {
     if (failed.length > 0) {
       await this.db.insert(tripEvents).values({ tripId, fromStatus: 'requested', toStatus: 'no_driver_found' });
       this.realtime.toUser(trip.passengerId, 'trip:updated', { id: tripId, status: 'no_driver_found' });
+      void this.notifications.notify(trip.passengerId, 'trip.no_driver_found', {}, { tripId, status: 'no_driver_found' });
     }
   }
 

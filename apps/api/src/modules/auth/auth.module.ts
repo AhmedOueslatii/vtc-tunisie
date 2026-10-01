@@ -15,6 +15,6 @@ import { TokensService } from './tokens.service.js';
     { provide: SMS_PROVIDER, useClass: ConsoleSmsProvider },
     { provide: APP_GUARD, useClass: AuthGuard },
   ],
-  exports: [TokensService],
+  exports: [TokensService, SMS_PROVIDER],
 })
 export class AuthModule {}

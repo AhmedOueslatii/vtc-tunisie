@@ -4,8 +4,9 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { env } from './config/env.js';
 import { RealtimeServer } from './modules/realtime/realtime.server.js';
+import { setupSwagger } from './swagger.js';
 
-const { PROCESS_ROLE, PORT, CORS_ORIGINS } = env();
+const { NODE_ENV, PROCESS_ROLE, PORT, CORS_ORIGINS } = env();
 
 if (PROCESS_ROLE === 'worker') {
   // Pas de HTTP : uniquement les consommateurs BullMQ (matching, et plus tard notifications, facturation).
@@ -18,6 +19,7 @@ if (PROCESS_ROLE === 'worker') {
   app.enableCors({ origin: CORS_ORIGINS.split(',').filter(Boolean) });
   app.enableShutdownHooks();
   app.get(RealtimeServer).attach(app.getHttpServer());
+  if (NODE_ENV !== 'production') setupSwagger(app);
   await app.listen(PORT);
   Logger.log(`API (${PROCESS_ROLE}) sur http://localhost:${PORT}/v1`, 'Bootstrap');
 }

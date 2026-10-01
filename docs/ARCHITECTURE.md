@@ -123,18 +123,41 @@ Chauffeur
   POST /v1/drivers/me/vehicles     { make, model, color, plate, year, category }
   POST /v1/drivers/me/availability { online }
   POST /v1/drivers/me/location     { points: [{ lat, lng, heading?, speed?, ts }] }
+  POST /v1/drivers/me/documents    multipart { type, expiresAt?, file }  (JPEG/PNG/PDF, 5 Mo ; assurance : expiresAt obligatoire)
+  GET  /v1/drivers/me/documents    dernière version de chaque pièce + statut de revue
+Adresses
+  GET  /v1/places/search?q&lat&lng&limit   autocomplétion (fr/ar, Tunisie), triée par proximité si lat/lng → [{ id, name, address, lat, lng }]
+  GET  /v1/places/reverse?lat&lng           adresse d'un point de la carte → { place | null }
+Notifications
+  GET  /v1/notifications?limit&cursor        boîte de réception → { items, unread, nextCursor }
+  POST /v1/notifications/:id/read | /v1/notifications/read-all
+  PUT  /v1/notifications/devices  { token, platform: android|ios }   à chaque démarrage de l'app
+  DELETE /v1/notifications/devices?token=                            à la déconnexion
+Support
+  POST /v1/support/tickets         { category: incident|lost_item|payment|safety|other, description, tripId? }
+  GET  /v1/support/tickets         mes signalements
 Courses
   POST /v1/trips/estimate          { pickup, dropoff, category }  → { quoteId, priceMillimes, distanceM, durationS, expiresAt }
   POST /v1/trips                   { quoteId, paymentMethod: "cash" }
-  GET  /v1/trips/:id
+  GET  /v1/trips?limit&cursor      historique paginé (passager ou chauffeur) → { items, nextCursor }
+  GET  /v1/trips/:id               ... driverEta { distanceM, durationS } tant que le chauffeur rejoint le passager
+  GET  /v1/trips/:id/track         trace GPS de la course (participants) → { points, travelledDistanceM }
   POST /v1/trips/:id/cancel
+  POST /v1/trips/:id/rating        { score: 1..5, comment? }  (course terminée, une note par participant)
   POST /v1/trips/:id/accept        (chauffeur)
   POST /v1/trips/:id/decline       (chauffeur)
-Admin (phase 1, minimal)
-  POST /v1/admin/drivers/:id/approve
+  POST /v1/trips/:id/arrived|start|complete   (chauffeur)
+  POST /v1/trips/:id/cash-collected           (chauffeur : paiement cash `pending` → `succeeded`)
+Admin
+  GET  /v1/admin/drivers/pending | /v1/admin/drivers/:id   file de validation, dossier (CIN/permis masqués) + pièces
+  GET  /v1/admin/drivers/:id/documents/:docId/file          scan (route authentifiée, jamais d'URL publique)
+  POST /v1/admin/drivers/:id/documents/:docId/approve|reject
+  POST /v1/admin/drivers/:id/approve|reject                 approve exige les pièces DRIVER_REQUIRED_DOCUMENTS approuvées
+  GET  /v1/admin/trips/:id/track                            trace GPS d'une course (litiges)
+  GET  /v1/admin/tickets?status&limit&cursor | PATCH /v1/admin/tickets/:id  { status }
 WebSocket (namespace /rt, JWT au handshake)
   client→serveur : driver:location
-  serveur→client : trip:offer, trip:offer_expired, trip:updated, driver:location (vers le passager de la course)
+  serveur→client : trip:offer, trip:offer_expired, trip:updated, driver:location (vers le passager de la course), notification:new (boîte de réception)
 ```
 
 ## 8. Spécificités tunisiennes

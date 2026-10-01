@@ -1,5 +1,6 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { uniqueViolation } from '../../common/db-errors.js';
@@ -7,10 +8,21 @@ import { AppError, Errors } from '../../common/errors.js';
 import { haversineMeters, isInTunisia, type LatLng } from '../../common/geo.js';
 import { env } from '../../config/env.js';
 import { DB, type Db } from '../../db/db.js';
-import { ACTIVE_TRIP_STATUSES, tripEvents, tripOffers, trips, users, vehicles } from '../../db/schema.js';
+import {
+  ACTIVE_TRIP_STATUSES,
+  locationPoints,
+  payments,
+  ratings,
+  tripEvents,
+  tripOffers,
+  trips,
+  users,
+  vehicles,
+} from '../../db/schema.js';
 import { RealtimeEmitter, REDIS } from '../../infra/infra.module.js';
 import { PresenceService, type VehicleCategory } from '../drivers/presence.service.js';
 import { MatchingService } from '../matching/matching.service.js';
+import { NotificationsService } from '../notifications/notifications.module.js';
 import { PricingService } from '../pricing/pricing.service.js';
 import { ROUTING_PROVIDER, type RoutingProvider } from '../routing/routing.provider.js';
 
@@ -37,6 +49,7 @@ interface Quote extends EstimateInput {
 const MIN_TRIP_M = 300;
 const MAX_TRIP_M = 500_000;
 const MAX_ARRIVAL_DISTANCE_M = 500;
+const MAX_TRACK_POINTS = 5_000;
 
 @Injectable()
 export class TripsService {
@@ -48,6 +61,7 @@ export class TripsService {
     private readonly matching: MatchingService,
     private readonly presence: PresenceService,
     private readonly realtime: RealtimeEmitter,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Devis : le prix affiché est garanti pendant QUOTE_TTL_S via `quoteId`. */
@@ -232,15 +246,147 @@ export class TripsService {
     return this.driverTransition(driverId, tripId, 'driver_arrived', 'in_progress', { startedAt: new Date() });
   }
 
-  /** Tarif garanti : le prix final est le prix du devis. Paiement cash et wallet : phase 1b. */
+  /** Tarif garanti : le prix final est le prix du devis. Le paiement cash est créé `pending` jusqu'à l'encaissement. */
   async complete(driverId: string, tripId: string) {
     const trip = await this.findForParticipant(driverId, tripId);
-    const view = await this.driverTransition(driverId, tripId, 'in_progress', 'completed', {
-      completedAt: new Date(),
-      finalPrice: trip.quotedPrice,
-    });
+    const view = await this.driverTransition(
+      driverId,
+      tripId,
+      'in_progress',
+      'completed',
+      { completedAt: new Date(), finalPrice: trip.quotedPrice },
+      (completed) => this.ensurePayment(completed),
+    );
     await this.presence.markAvailable(driverId);
     return view;
+  }
+
+  /** Le chauffeur confirme avoir encaissé la course en espèces. Idempotent. */
+  async confirmCashCollected(driverId: string, tripId: string) {
+    const trip = await this.findForParticipant(driverId, tripId);
+    if (trip.driverId !== driverId) throw Errors.notFound('Course');
+    if (trip.status !== 'completed') {
+      throw Errors.conflict('TRIP_NOT_COMPLETED', 'La course doit être terminée');
+    }
+    if (trip.paymentMethod !== 'cash') {
+      throw Errors.conflict('PAYMENT_NOT_CASH', 'Cette course ne se règle pas en espèces');
+    }
+    const payment = await this.ensurePayment(trip);
+    if (payment.status === 'pending') {
+      await this.db
+        .update(payments)
+        .set({ status: 'succeeded' })
+        .where(and(eq(payments.id, payment.id), eq(payments.status, 'pending')));
+    }
+    return this.publish(trip, false); // statut inchangé : pas de nouvelle notification
+  }
+
+  /**
+   * Trace GPS enregistrée pendant la course (du moment où le chauffeur accepte jusqu'à la fin).
+   * Sans `participantId` : accès back-office, sans contrôle de participation.
+   */
+  async track(tripId: string, participantId?: string) {
+    const trip = participantId
+      ? await this.findForParticipant(participantId, tripId)
+      : (await this.db.select().from(trips).where(eq(trips.id, tripId)))[0];
+    if (!trip) throw Errors.notFound('Course');
+
+    const rows = await this.db
+      .select({ point: locationPoints.point, recordedAt: locationPoints.recordedAt })
+      .from(locationPoints)
+      .where(eq(locationPoints.tripId, tripId))
+      .orderBy(asc(locationPoints.recordedAt))
+      .limit(MAX_TRACK_POINTS);
+    const points = rows.map((r) => ({ lat: r.point.lat, lng: r.point.lng, ts: r.recordedAt.getTime() }));
+    let travelledDistanceM = 0;
+    for (let i = 1; i < points.length; i++) travelledDistanceM += haversineMeters(points[i - 1]!, points[i]!);
+    return { tripId, status: trip.status, points, travelledDistanceM: Math.round(travelledDistanceM) };
+  }
+
+  /** Notation bidirectionnelle : chaque participant note l'autre une seule fois, une fois la course terminée. */
+  async rate(userId: string, tripId: string, score: number, comment?: string) {
+    const trip = await this.findForParticipant(userId, tripId);
+    if (trip.status !== 'completed' || !trip.driverId) {
+      throw Errors.conflict('TRIP_NOT_COMPLETED', 'La course doit être terminée');
+    }
+    const rateeId = trip.passengerId === userId ? trip.driverId : trip.passengerId;
+
+    try {
+      return await this.db.transaction(async (tx) => {
+        // Verrou sur le noté : la moyenne est recalculée sur un état à jour même si deux notes arrivent en même temps.
+        await tx.select({ id: users.id }).from(users).where(eq(users.id, rateeId)).for('update');
+        const [rating] = await tx
+          .insert(ratings)
+          .values({ tripId, raterId: userId, rateeId, score, comment })
+          .returning();
+        await tx
+          .update(users)
+          .set({
+            ratingAvg: sql`(SELECT ROUND(AVG(${ratings.score}), 2) FROM ${ratings} WHERE ${ratings.rateeId} = ${rateeId})`,
+            ratingCount: sql`(SELECT COUNT(*)::int FROM ${ratings} WHERE ${ratings.rateeId} = ${rateeId})`,
+          })
+          .where(eq(users.id, rateeId));
+        return rating;
+      });
+    } catch (e) {
+      if (uniqueViolation(e) === 'ratings_one_per_rater') {
+        throw Errors.conflict('ALREADY_RATED', 'Vous avez déjà noté cette course');
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Historique paginé (plus récent d'abord). `cursor` = `requestedAt` du dernier élément reçu.
+   * Chaque côté voit l'autre partie : le passager le chauffeur et son véhicule, le chauffeur le passager.
+   */
+  async history(userId: string, limit: number, cursor?: Date) {
+    const counterpart = alias(users, 'counterpart');
+    const rows = await this.db
+      .select({
+        trip: trips,
+        counterpart: {
+          id: counterpart.id,
+          fullName: counterpart.fullName,
+          photoUrl: counterpart.photoUrl,
+          rating: counterpart.ratingAvg,
+        },
+        vehicle: { make: vehicles.make, model: vehicles.model, color: vehicles.color, plate: vehicles.plate },
+        myRating: ratings.score,
+      })
+      .from(trips)
+      .leftJoin(
+        counterpart,
+        eq(
+          counterpart.id,
+          sql`CASE WHEN ${trips.passengerId} = ${userId} THEN ${trips.driverId} ELSE ${trips.passengerId} END`,
+        ),
+      )
+      .leftJoin(vehicles, eq(vehicles.id, trips.vehicleId))
+      .leftJoin(ratings, and(eq(ratings.tripId, trips.id), eq(ratings.raterId, userId)))
+      .where(
+        and(
+          or(eq(trips.passengerId, userId), eq(trips.driverId, userId)),
+          // Postgres stocke des microsecondes, le curseur JS des millisecondes : on compare à la milliseconde.
+          cursor ? sql`date_trunc('milliseconds', ${trips.requestedAt}) < ${cursor}` : undefined,
+        ),
+      )
+      .orderBy(desc(trips.requestedAt))
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    const items = page.map(({ trip, counterpart: other, vehicle, myRating }) => {
+      const { idempotencyKey: _k, offeredDriverId: _o, pricingRuleId: _p, ...publicFields } = trip;
+      const passengerSide = trip.passengerId === userId;
+      return {
+        ...publicFields,
+        counterpart: other?.id ? other : null,
+        vehicle: passengerSide && trip.vehicleId ? vehicle : null,
+        myRating: myRating ?? null,
+      };
+    });
+    const last = page.at(-1)?.trip;
+    return { items, nextCursor: rows.length > limit && last ? last.requestedAt.toISOString() : null };
   }
 
   async cancel(userId: string, tripId: string, reason?: string) {
@@ -303,6 +449,7 @@ export class TripsService {
     from: TripStatus,
     to: TripStatus,
     patch: Partial<typeof trips.$inferInsert>,
+    after?: (updated: Trip) => Promise<unknown>,
   ) {
     const [updated] = await this.db
       .update(trips)
@@ -311,7 +458,19 @@ export class TripsService {
       .returning();
     if (!updated) throw Errors.conflict('TRIP_STATE_CHANGED', `Transition ${from} → ${to} impossible`);
     await this.db.insert(tripEvents).values({ tripId, fromStatus: from, toStatus: to, actorId: driverId });
+    await after?.(updated);
     return this.publish(updated);
+  }
+
+  /** Un seul paiement par course : créé à la fin de la course, ou rattrapé ici si cette étape avait échoué. */
+  private async ensurePayment(trip: Trip) {
+    const [existing] = await this.db.select().from(payments).where(eq(payments.tripId, trip.id));
+    if (existing) return existing;
+    const [created] = await this.db
+      .insert(payments)
+      .values({ tripId: trip.id, method: trip.paymentMethod, amount: trip.finalPrice ?? trip.quotedPrice })
+      .returning();
+    return created!;
   }
 
   private async findForParticipant(userId: string, tripId: string): Promise<Trip> {
@@ -320,11 +479,39 @@ export class TripsService {
     return trip;
   }
 
-  private async publish(trip: Trip) {
+  private async publish(trip: Trip, notify = true) {
     const view = await this.view(trip);
     this.realtime.toUser(trip.passengerId, 'trip:updated', view);
     if (trip.driverId) this.realtime.toUser(trip.driverId, 'trip:updated', view);
+    if (notify) this.notifyStatus(trip, view.driver);
     return view;
+  }
+
+  /** Push + boîte de réception pour les changements de statut qui concernent l'autre partie (sans attendre, sans jamais échouer). */
+  private notifyStatus(trip: Trip, driver: { fullName: string | null; vehicle: { plate: string } } | null) {
+    const data = { tripId: trip.id, status: trip.status };
+    switch (trip.status) {
+      case 'driver_assigned':
+        void this.notifications.notify(
+          trip.passengerId,
+          'trip.driver_assigned',
+          { driverName: driver?.fullName?.split(' ')[0], plate: driver?.vehicle.plate },
+          data,
+        );
+        break;
+      case 'driver_arrived':
+        void this.notifications.notify(trip.passengerId, 'trip.driver_arrived', {}, data);
+        break;
+      case 'completed':
+        void this.notifications.notify(trip.passengerId, 'trip.completed', { price: trip.finalPrice ?? trip.quotedPrice }, data);
+        break;
+      case 'cancelled_by_driver':
+        void this.notifications.notify(trip.passengerId, 'trip.cancelled_by_driver', {}, data);
+        break;
+      case 'cancelled_by_passenger':
+        if (trip.driverId) void this.notifications.notify(trip.driverId, 'trip.cancelled_by_passenger', {}, data);
+        break;
+    }
   }
 
   private async view(trip: Trip) {
@@ -344,7 +531,23 @@ export class TripsService {
         .where(eq(users.id, trip.driverId));
       driver = row ?? null;
     }
+    // ETA tant que le chauffeur rejoint le passager, d'après sa dernière position connue.
+    let driverEta = null;
+    if (trip.status === 'driver_assigned' && trip.driverId) {
+      const state = await this.presence.getState(trip.driverId);
+      if (state?.lat !== undefined && state.lng !== undefined) {
+        const { distanceM, durationS } = await this.routing.route({ lat: state.lat, lng: state.lng }, trip.pickup);
+        driverEta = { distanceM, durationS, updatedAt: state.lastSeen ?? null };
+      }
+    }
+    let payment = null;
+    if (trip.status === 'completed') {
+      [payment = null] = await this.db
+        .select({ method: payments.method, amount: payments.amount, status: payments.status })
+        .from(payments)
+        .where(eq(payments.tripId, trip.id));
+    }
     const { idempotencyKey: _k, offeredDriverId: _o, pricingRuleId: _p, ...publicFields } = trip;
-    return { ...publicFields, driver };
+    return { ...publicFields, driver, driverEta, payment };
   }
 }

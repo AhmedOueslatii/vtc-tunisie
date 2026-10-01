@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { FieldCipher } from '../../common/crypto.js';
 import { uniqueViolation } from '../../common/db-errors.js';
@@ -7,7 +7,7 @@ import { AppError, Errors } from '../../common/errors.js';
 import type { LatLng } from '../../common/geo.js';
 import { env } from '../../config/env.js';
 import { DB, type Db } from '../../db/db.js';
-import { driverProfiles, vehicles } from '../../db/schema.js';
+import { driverProfiles, locationPoints, users, vehicles } from '../../db/schema.js';
 import { RealtimeEmitter } from '../../infra/infra.module.js';
 import { PresenceService, type VehicleCategory } from './presence.service.js';
 
@@ -32,8 +32,11 @@ export interface LocationPoint extends LatLng {
   speed?: number;
 }
 
+const TRACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 @Injectable()
 export class DriversService {
+  private readonly logger = new Logger(DriversService.name);
   private readonly cipher = new FieldCipher(env().DATA_ENCRYPTION_KEY);
 
   constructor(
@@ -55,6 +58,34 @@ export class DriversService {
       rejectionReason: profile.rejectionReason,
       vehicle: vehicle ?? null,
       presence: await this.presence.getState(driverId),
+    };
+  }
+
+  /** Dossier vu par le back-office. Les numéros sont masqués : l'admin les compare aux scans, il n'a pas à les lire en clair. */
+  async getAdminDetail(driverId: string) {
+    const [row] = await this.db
+      .select({ profile: driverProfiles, phone: users.phone, fullName: users.fullName })
+      .from(driverProfiles)
+      .innerJoin(users, eq(users.id, driverProfiles.userId))
+      .where(eq(driverProfiles.userId, driverId));
+    if (!row) throw Errors.notFound('Chauffeur');
+    const [vehicle] = await this.db
+      .select()
+      .from(vehicles)
+      .where(and(eq(vehicles.driverId, driverId), eq(vehicles.isActive, true)));
+
+    const mask = (plain: string) => '*'.repeat(Math.max(plain.length - 3, 0)) + plain.slice(-3);
+    const { profile } = row;
+    return {
+      userId: driverId,
+      phone: row.phone,
+      fullName: row.fullName,
+      status: profile.status,
+      rejectionReason: profile.rejectionReason,
+      cin: mask(this.cipher.decrypt(profile.cinEncrypted)),
+      licenseNumber: mask(this.cipher.decrypt(profile.licenseEncrypted)),
+      licenseExpiry: profile.licenseExpiry,
+      vehicle: vehicle ?? null,
     };
   }
 
@@ -147,7 +178,27 @@ export class DriversService {
         ts: latest.ts,
       });
     }
+    if (state.status === 'on_trip' && state.tripId) await this.recordTrack(driverId, state.tripId, points);
     return { accepted: true };
+  }
+
+  /**
+   * Trace GPS : tous les points du lot sont conservés (l'app les met en file hors réseau), pas seulement le plus récent.
+   * Les horodatages aberrants sont ignorés et un lot rejoué après une réponse perdue ne crée pas de doublons.
+   * Une panne d'écriture ne doit pas interrompre le suivi en direct : on journalise sans échouer.
+   */
+  private async recordTrack(driverId: string, tripId: string, points: LocationPoint[]) {
+    const now = Date.now();
+    const valid = points.filter((p) => p.ts <= now + 60_000 && p.ts >= now - TRACK_MAX_AGE_MS);
+    if (valid.length === 0) return;
+    try {
+      await this.db
+        .insert(locationPoints)
+        .values(valid.map((p) => ({ tripId, driverId, point: { lat: p.lat, lng: p.lng }, recordedAt: new Date(p.ts) })))
+        .onConflictDoNothing();
+    } catch (e) {
+      this.logger.error(`trace GPS course ${tripId} : ${(e as Error).message}`);
+    }
   }
 
   private async requireProfile(driverId: string) {

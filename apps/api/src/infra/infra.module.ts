@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import pg from 'pg';
 import { env } from '../config/env.js';
 import { createDb, DB } from '../db/db.js';
+import { LocalObjectStorage, STORAGE } from './storage.js';
 
 export const REDIS = Symbol('REDIS');
 export const PG_POOL = Symbol('PG_POOL');
@@ -18,7 +19,8 @@ export function createBullConnection(): Redis {
 export type MatchingJob =
   | { name: 'dispatch'; data: { tripId: string } }
   | { name: 'offer-timeout'; data: { offerId: string } }
-  | { name: 'sweep-stale-drivers'; data: Record<string, never> };
+  | { name: 'sweep-stale-drivers'; data: Record<string, never> }
+  | { name: 'purge-location-points'; data: Record<string, never> };
 
 /**
  * Émission Socket.IO via Redis : fonctionne depuis n'importe quel processus (api ou worker),
@@ -61,9 +63,10 @@ const database = createDb(env().DATABASE_URL);
     { provide: DB, useValue: database.db },
     { provide: REDIS, useFactory: () => new Redis(env().REDIS_URL) },
     { provide: MATCHING_QUEUE, useFactory: () => new Queue('matching', { connection: createBullConnection() }) },
+    { provide: STORAGE, useClass: LocalObjectStorage },
     RealtimeEmitter,
     Shutdown,
   ],
-  exports: [DB, REDIS, MATCHING_QUEUE, RealtimeEmitter],
+  exports: [DB, REDIS, MATCHING_QUEUE, STORAGE, RealtimeEmitter],
 })
 export class InfraModule {}

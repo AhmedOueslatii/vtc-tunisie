@@ -52,14 +52,16 @@ export const driverStatusEnum = pgEnum('driver_status', [
   'rejected',
   'suspended',
 ]);
-export const documentTypeEnum = pgEnum('document_type', [
+export const DOCUMENT_TYPES = [
   'cin',
   'driving_license',
   'vehicle_registration', // carte grise
   'insurance',
   'criminal_record', // bulletin n°3 — [À VALIDER] exigence réglementaire
   'profile_photo',
-]);
+] as const;
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+export const documentTypeEnum = pgEnum('document_type', DOCUMENT_TYPES);
 export const documentStatusEnum = pgEnum('document_status', ['pending', 'approved', 'rejected', 'expired']);
 export const vehicleCategoryEnum = pgEnum('vehicle_category', ['standard', 'premium', 'van']);
 export const tripStatusEnum = pgEnum('trip_status', [
@@ -320,7 +322,8 @@ export const locationPoints = pgTable(
     point: geoPoint('point').notNull(),
     recordedAt: ts('recorded_at').notNull(),
   },
-  (t) => [index('location_points_trip_idx').on(t.tripId, t.recordedAt)],
+  // Unique : une position rejouée par l'app (retry réseau) n'est enregistrée qu'une fois.
+  (t) => [uniqueIndex('location_points_trip_ts').on(t.tripId, t.recordedAt)],
 );
 
 // ─── Paiements & wallet ──────────────────────────────────────────────────────
@@ -410,6 +413,24 @@ export const supportTickets = pgTable('support_tickets', {
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+export const devicePlatformEnum = pgEnum('device_platform', ['android', 'ios']);
+
+/** Jetons push (FCM/APNs/Expo) : un appareil appartient à un seul utilisateur à la fois. */
+export const deviceTokens = pgTable(
+  'device_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: text('token').notNull(),
+    platform: devicePlatformEnum('platform').notNull(),
+    createdAt: createdAt(),
+    lastSeenAt: ts('last_seen_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('device_tokens_token').on(t.token), index('device_tokens_user_idx').on(t.userId)],
+);
 
 export const notifications = pgTable(
   'notifications',

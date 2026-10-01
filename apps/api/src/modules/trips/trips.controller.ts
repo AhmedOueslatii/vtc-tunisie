@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { ApiQuery } from '@nestjs/swagger';
 import { z } from 'zod';
 import { latLngSchema, ZodPipe } from '../../common/zod.pipe.js';
 import { CurrentUser } from '../auth/auth.guard.js';
@@ -20,6 +21,11 @@ const requestSchema = z.object({
 });
 
 const cancelSchema = z.object({ reason: z.string().max(300).optional() });
+const ratingSchema = z.object({ score: z.number().int().min(1).max(5), comment: z.string().trim().max(500).optional() });
+const historySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.coerce.date().optional(),
+});
 const idempotencyKey = z.string().min(8).max(64).optional();
 
 @Controller('trips')
@@ -41,6 +47,13 @@ export class TripsController {
     return this.trips.request(user.id, body.quoteId, new ZodPipe(idempotencyKey).transform(key));
   }
 
+  @Get()
+  @ApiQuery({ name: 'limit', required: false, description: '1 à 50 (défaut 20)' })
+  @ApiQuery({ name: 'cursor', required: false, description: 'nextCursor de la page précédente' })
+  history(@CurrentUser() user: AuthUser, @Query(new ZodPipe(historySchema)) query: z.infer<typeof historySchema>) {
+    return this.trips.history(user.id, query.limit, query.cursor);
+  }
+
   @Get('active')
   active(@CurrentUser() user: AuthUser) {
     return this.trips.active(user.id);
@@ -51,6 +64,12 @@ export class TripsController {
     return this.trips.get(user.id, id);
   }
 
+  /** Trace GPS de la course (positions du chauffeur), pour le récapitulatif ou un litige. */
+  @Get(':id/track')
+  track(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trips.track(id, user.id);
+  }
+
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   cancel(
@@ -59,6 +78,16 @@ export class TripsController {
     @Body(new ZodPipe(cancelSchema)) body: z.infer<typeof cancelSchema>,
   ) {
     return this.trips.cancel(user.id, id, body.reason);
+  }
+
+  /** Passager ou chauffeur note l'autre partie (course terminée uniquement). */
+  @Post(':id/rating')
+  rate(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body(new ZodPipe(ratingSchema)) body: z.infer<typeof ratingSchema>,
+  ) {
+    return this.trips.rate(user.id, id, body.score, body.comment);
   }
 
   // ─── Actions chauffeur ─────────────────────────────────────────────────────
@@ -91,5 +120,11 @@ export class TripsController {
   @HttpCode(HttpStatus.OK)
   complete(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.trips.complete(user.id, id);
+  }
+
+  @Post(':id/cash-collected')
+  @HttpCode(HttpStatus.OK)
+  cashCollected(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trips.confirmCashCollected(user.id, id);
   }
 }

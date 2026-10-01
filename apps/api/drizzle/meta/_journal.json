@@ -15,6 +15,13 @@
       "when": 1790789413778,
       "tag": "0001_opposite_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790858146947,
+      "tag": "0002_classy_vance_astro",
+      "breakpoints": true
     }
   ]
 }
