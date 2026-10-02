@@ -17,6 +17,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <NavLink href="/">{t('nav.dashboard')}</NavLink>
             <NavLink href="/drivers">{t('nav.drivers')}</NavLink>
             <NavLink href="/trips">{t('nav.trips')}</NavLink>
+            <NavLink href="/wallets">{t('nav.wallets')}</NavLink>
             <NavLink href="/pricing">{t('nav.pricing')}</NavLink>
             <NavLink href="/tickets">{t('nav.tickets')}</NavLink>
             <NavLink href="/audit">{t('nav.audit')}</NavLink>

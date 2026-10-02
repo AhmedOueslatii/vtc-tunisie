@@ -8,7 +8,7 @@ export async function Flash({ notice, error }: { notice?: string; error?: string
   const locale = await getLocale();
   const t = createT(locale);
   const noticeKey = `notice.${notice}` as MessageKey;
-  const known = notice !== undefined && ['driver_approved', 'driver_rejected', 'doc_approved', 'doc_rejected', 'ticket_updated', 'pricing_updated'].includes(notice);
+  const known = notice !== undefined && ['driver_approved', 'driver_rejected', 'doc_approved', 'doc_rejected', 'ticket_updated', 'pricing_updated', 'wallet_settled', 'wallet_adjusted'].includes(notice);
 
   return (
     <>

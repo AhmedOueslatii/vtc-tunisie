@@ -159,9 +159,35 @@ export interface AuditEntry {
   admin: Person;
 }
 
+export type WalletState = 'ok' | 'warning' | 'blocked';
+
+export interface WalletTransaction {
+  id: string;
+  type: string;
+  /** Signé : négatif = le chauffeur doit davantage */
+  amount: number;
+  balanceAfter: number;
+  tripId: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface WalletView {
+  balance: number;
+  debt: number;
+  ceiling: number;
+  state: WalletState;
+  transactions: { items: WalletTransaction[]; nextCursor: string | null };
+}
+
+export interface DebtsView {
+  ceiling: number;
+  items: { driverId: string; fullName: string | null; phone: string; balance: number; debt: number; state: WalletState }[];
+}
+
 export interface Overview {
   range: { days: number };
-  live: { activeTrips: number; availableDrivers: number; pendingDrivers: number; openTickets: number };
+  live: { activeTrips: number; availableDrivers: number; pendingDrivers: number; openTickets: number; totalDebt: number; driversInDebt: number };
   totals: {
     requested: number;
     completed: number;

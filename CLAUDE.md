@@ -16,7 +16,7 @@ pnpm api test:e2e                # parcours complet : exige l'API démarrée + P
 
 Après un changement de `src/db/schema.ts` : `pnpm api db:generate` (génère la migration **et** retire les guillemets des types PostGIS), relire le SQL, puis `pnpm api build && pnpm api db:migrate`. Ne jamais éditer une migration déjà appliquée.
 
-Tests e2e : par défaut contre `http://localhost:3000`. Pour ne pas toucher à un serveur déjà lancé : `PORT=3005 node dist/main.js` puis `API_URL=http://localhost:3005 pnpm api test:e2e`. Ils supposent la configuration par défaut (code OTP `123456`, pièces chauffeur obligatoires) et créent des comptes aléatoires dans la base de dev.
+Tests e2e : par défaut contre `http://localhost:3000`. Pour ne pas toucher à un serveur déjà lancé : `PORT=3005 node dist/main.js` puis `API_URL=http://localhost:3005 pnpm api test:e2e`. Ils supposent la configuration par défaut (code OTP `123456`, pièces chauffeur obligatoires) et créent des comptes aléatoires dans la base de dev. **Ne pas relancer une suite e2e juste après une autre** : le chauffeur de l'exécution précédente reste « en ligne » 30 s, et les courses qu'elle a laissées en recherche (jusqu'à 90 s) reçoivent l'offre avant le chauffeur du test, qui expire alors à 5 s. Attendre environ 2 minutes (après un échec surtout) avant de relancer.
 
 ## Back-office (`apps/admin`)
 
@@ -41,7 +41,7 @@ pnpm admin test:e2e              # navigateur Chromium : exige l'API + le back-o
 
 ## Architecture de `apps/api/src`
 
-Monolithe modulaire, un dossier par domaine dans `modules/` (`auth`, `users`, `drivers`, `matching`, `trips`, `pricing`, `routing`, `places`, `notifications`, `support`, `admin`, `realtime`). `infra/` regroupe Postgres (Drizzle), Redis, la file BullMQ, le stockage de fichiers et l'émetteur Socket.IO. Les dépendances prévues entre modules sont décrites dans `docs/ARCHITECTURE.md`.
+Monolithe modulaire, un dossier par domaine dans `modules/` (`auth`, `users`, `drivers`, `matching`, `trips`, `pricing`, `routing`, `places`, `notifications`, `support`, `wallet`, `audit`, `admin`, `realtime`). `infra/` regroupe Postgres (Drizzle), Redis, la file BullMQ, le stockage de fichiers et l'émetteur Socket.IO. Les dépendances prévues entre modules sont décrites dans `docs/ARCHITECTURE.md`.
 
 - **Deux rôles de processus** (`PROCESS_ROLE`) : `api` (HTTP + WebSocket), `worker` (files BullMQ : matching, purge GPS), `all` en dev.
 - **Fournisseurs interchangeables** derrière une interface + un `Symbol` d'injection : SMS (`SmsProvider`), push (`PushProvider`), routage (`RoutingProvider`), adresses (`GeocodingProvider`), stockage (`ObjectStorage`). Les implémentations « console » / « static » / disque local sont réservées au dev ; brancher le vrai service en remplaçant uniquement l'implémentation.
@@ -54,6 +54,7 @@ Monolithe modulaire, un dossier par domaine dans `modules/` (`auth`, `users`, `d
 - **Erreurs** : toujours `AppError(code, message, status)` ou `Errors.*`. Le `code` (ex. `DRIVER_NOT_APPROVED`) est stable et traduit par les apps ; le `message` est pour les développeurs.
 - **Argent** : entiers en **millimes** (1 DT = 1000 millimes), jamais de flottants. Prix garanti par le devis (`quoteId`), final = devis.
 - **Données sensibles** : CIN et n° de permis chiffrés (`FieldCipher`) + empreinte pour l'unicité ; ne jamais les journaliser ni les renvoyer en clair (l'admin les voit masqués). Les fichiers de documents ne sortent que par une route admin authentifiée.
+- **Portefeuille chauffeur** (`modules/wallet`) : solde négatif = dette de commissions cash envers la plateforme. La commission (taux **figé au devis** dans `trips.commission_bps`, pas celui du jour) est créée dans la même transaction que l'encaissement `cash-collected`, une seule fois par course (index unique). Le grand livre (`wallet_transactions`) n'est jamais modifié ni supprimé ; chaque ligne porte le solde qui en résulte. Au plafond `DRIVER_DEBT_CEILING` le chauffeur est mis hors ligne et ne peut plus repasser en ligne (`DEBT_LIMIT_REACHED`) ; avertissement à 80 %. L'admin enregistre des règlements (jamais au-delà de la dette) et des ajustements signés et motivés, journalisés dans la même transaction. Les règles pures sont dans `wallet/commission.ts`.
 - **Idempotence** : `Idempotency-Key` sur `POST /trips`, positions GPS dédupliquées par `(trip_id, recorded_at)`, `cash-collected` rejouable.
 - **Notifications** : passer par `NotificationsService.notify(...)` (ne lève jamais, ne pas l'`await` dans un flux métier). Les textes fr/ar sont dans `modules/notifications/messages.ts`.
 - **Pagination** : curseur sur la date (`nextCursor` = `createdAt`/`requestedAt` ISO du dernier élément), comparée à la milliseconde car Postgres stocke des microsecondes.

@@ -263,6 +263,52 @@ export const fr = {
   'audit.action.ticket.update': 'Signalement mis à jour',
 
   'errors.DEFAULT_RULE_REQUIRED': 'La règle par défaut d’une catégorie ne peut pas être désactivée.',
+  'nav.wallets': 'Portefeuilles',
+
+  'wallets.title': 'Portefeuilles et dettes',
+  'wallets.subtitle': 'Commissions dues à la plateforme sur les courses payées en espèces. Au plafond, le chauffeur ne peut plus passer en ligne.',
+  'wallets.ceiling': 'Plafond de dette : {amount}',
+  'wallets.empty': 'Aucun chauffeur n’a de dette.',
+  'wallets.col.driver': 'Chauffeur',
+  'wallets.col.debt': 'Dette',
+  'wallets.col.share': 'Part du plafond',
+  'wallets.col.state': 'État',
+
+  'walletState.ok': 'Normal',
+  'walletState.warning': 'Proche du plafond',
+  'walletState.blocked': 'Bloqué',
+
+  'wallet.title': 'Portefeuille',
+  'wallet.balance': 'Solde',
+  'wallet.debt': 'Dette de commissions',
+  'wallet.noDebt': 'Aucune dette',
+  'wallet.ceiling': 'Plafond',
+  'wallet.transactions': 'Derniers mouvements',
+  'wallet.noTransactions': 'Aucun mouvement.',
+  'wallet.amount': 'Montant (DT)',
+  'wallet.note': 'Note (facultatif)',
+  'wallet.settle.title': 'Enregistrer un règlement',
+  'wallet.settle.help': 'Le chauffeur a remis de l’argent à la plateforme. Le montant ne peut pas dépasser sa dette.',
+  'wallet.adjust.title': 'Ajustement manuel',
+  'wallet.adjust.help': 'Montant négatif : le chauffeur doit davantage (pénalité). Positif : il doit moins (correction). Un motif est obligatoire.',
+
+  'walletTx.platform_commission': 'Commission',
+  'walletTx.settlement': 'Règlement',
+  'walletTx.adjustment': 'Ajustement',
+  'walletTx.trip_earning': 'Gain de course',
+  'walletTx.cancellation_fee': 'Frais d’annulation',
+  'walletTx.payout': 'Virement',
+
+  'notice.wallet_settled': 'Règlement enregistré. Le chauffeur a été prévenu.',
+  'notice.wallet_adjusted': 'Ajustement enregistré.',
+
+  'dashboard.tile.debt': 'Dettes de commission',
+  'dashboard.tile.debtHint': '{drivers} chauffeurs concernés',
+
+  'audit.action.wallet.settlement': 'Règlement enregistré',
+  'audit.action.wallet.adjustment': 'Ajustement de portefeuille',
+
+  'errors.SETTLEMENT_EXCEEDS_DEBT': 'Le règlement dépasse la dette du chauffeur.',
 } as const;
 
 export type MessageKey = keyof typeof fr;
@@ -527,6 +573,52 @@ export const ar: Record<MessageKey, string> = {
   'audit.action.ticket.update': 'تحديث بلاغ',
 
   'errors.DEFAULT_RULE_REQUIRED': 'لا يمكن تعطيل القاعدة الافتراضية لصنف ما.',
+  'nav.wallets': 'المحافظ',
+
+  'wallets.title': 'المحافظ والديون',
+  'wallets.subtitle': 'العمولات المستحقة للمنصة عن الرحلات المدفوعة نقدًا. عند بلوغ الحد الأقصى لا يمكن للسائق الاتصال بالإنترنت.',
+  'wallets.ceiling': 'الحد الأقصى للدين: {amount}',
+  'wallets.empty': 'لا يوجد سائق عليه دين.',
+  'wallets.col.driver': 'السائق',
+  'wallets.col.debt': 'الدين',
+  'wallets.col.share': 'نسبة الحد الأقصى',
+  'wallets.col.state': 'الحالة',
+
+  'walletState.ok': 'عادي',
+  'walletState.warning': 'قريب من الحد الأقصى',
+  'walletState.blocked': 'موقوف',
+
+  'wallet.title': 'المحفظة',
+  'wallet.balance': 'الرصيد',
+  'wallet.debt': 'دين العمولات',
+  'wallet.noDebt': 'لا يوجد دين',
+  'wallet.ceiling': 'الحد الأقصى',
+  'wallet.transactions': 'آخر الحركات',
+  'wallet.noTransactions': 'لا توجد حركات.',
+  'wallet.amount': 'المبلغ (د.ت)',
+  'wallet.note': 'ملاحظة (اختياري)',
+  'wallet.settle.title': 'تسجيل تسوية',
+  'wallet.settle.help': 'سلّم السائق مبلغًا إلى المنصة. لا يمكن أن يتجاوز المبلغ دينه.',
+  'wallet.adjust.title': 'تعديل يدوي',
+  'wallet.adjust.help': 'مبلغ سالب: يزداد دين السائق (غرامة). موجب: ينقص (تصحيح). السبب إلزامي.',
+
+  'walletTx.platform_commission': 'عمولة',
+  'walletTx.settlement': 'تسوية',
+  'walletTx.adjustment': 'تعديل',
+  'walletTx.trip_earning': 'ربح رحلة',
+  'walletTx.cancellation_fee': 'رسوم الإلغاء',
+  'walletTx.payout': 'تحويل',
+
+  'notice.wallet_settled': 'تم تسجيل التسوية وإعلام السائق.',
+  'notice.wallet_adjusted': 'تم تسجيل التعديل.',
+
+  'dashboard.tile.debt': 'ديون العمولة',
+  'dashboard.tile.debtHint': '{drivers} سائقين معنيون',
+
+  'audit.action.wallet.settlement': 'تسجيل تسوية',
+  'audit.action.wallet.adjustment': 'تعديل محفظة',
+
+  'errors.SETTLEMENT_EXCEEDS_DEBT': 'التسوية تتجاوز دين السائق.',
 };
 
 export const messages = { fr, ar } as const;

@@ -42,11 +42,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       {overview && (
         <>
           <h2 className="mb-3 text-sm font-semibold text-muted">{t('dashboard.live')}</h2>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             <StatTile label={t('dashboard.tile.activeTrips')} value={n(overview.live.activeTrips)} href="/trips?status=active" />
             <StatTile label={t('dashboard.tile.availableDrivers')} value={n(overview.live.availableDrivers)} />
             <StatTile label={t('dashboard.tile.pendingDrivers')} value={n(overview.live.pendingDrivers)} href="/drivers" />
             <StatTile label={t('dashboard.tile.openTickets')} value={n(overview.live.openTickets)} href="/tickets?status=open" />
+            <StatTile
+              label={t('dashboard.tile.debt')}
+              value={formatDt(overview.live.totalDebt, locale)}
+              hint={t('dashboard.tile.debtHint', { drivers: n(overview.live.driversInDebt) })}
+              href="/wallets"
+            />
           </div>
 
           <div className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-3">

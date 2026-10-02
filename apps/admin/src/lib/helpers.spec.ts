@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { describeAudit } from './audit';
 import { labelIndices, niceScale } from './chart';
 import { formatDt, formatKm, formatNumber, formatPercent } from './format';
-import { exampleFare, parseDinars, parsePercent, toDinarsInput, toPercentInput } from './money';
+import { exampleFare, parseDinars, parsePercent, parseSignedDinars, toDinarsInput, toPercentInput } from './money';
 
 describe('format', () => {
   it('affiche les millimes en dinars avec 3 décimales', () => {
@@ -51,6 +51,20 @@ describe('montants saisis', () => {
     expect(toDinarsInput(1_500)).toBe('1.500');
     expect(parseDinars(toDinarsInput(7_300))).toBe(7_300);
     expect(parsePercent(toPercentInput(1_725))).toBe(1_725);
+  });
+});
+
+describe('parseSignedDinars', () => {
+  it('accepte un signe pour les ajustements (« -5 » : le chauffeur doit 5 DT de plus)', () => {
+    expect(parseSignedDinars('-5')).toBe(-5_000);
+    expect(parseSignedDinars('-2,5')).toBe(-2_500);
+    expect(parseSignedDinars('+2,5')).toBe(2_500);
+    expect(parseSignedDinars('5')).toBe(5_000);
+    expect(parseSignedDinars('  -0,100 ')).toBe(-100);
+  });
+
+  it.each(['', '-', '+', '--5', '-abc', '5-', '1,2345', '- -5'])('refuse « %s »', (input) => {
+    expect(parseSignedDinars(input)).toBeNull();
   });
 });
 
@@ -116,6 +130,19 @@ describe('describeAudit', () => {
     expect(text.replace(/[\s  ]/g, '')).toContain('1,500DT→2,500DT');
     expect(text.replace(/[\s  ]/g, '')).toContain('20,00%→15,00%');
     expect(text).not.toContain('(DT)');
+  });
+
+  it('résume un règlement et un ajustement de portefeuille, avec leur signe', () => {
+    const spaces = (text: string) => text.replace(/[\s  ]/g, '');
+    expect(spaces(describeAudit('wallet.settlement', { amount: 10_000, note: 'Remise en main propre' }, 'fr'))).toBe(
+      '10,000DT—Remiseenmainpropre',
+    );
+    const penalty = spaces(describeAudit('wallet.adjustment', { amount: -5_000, reason: 'Pénalité' }, 'fr'));
+    expect(penalty).toContain('5,000DT');
+    expect(penalty).toContain('Pénalité');
+    expect(penalty.startsWith('+')).toBe(false);
+    expect(spaces(describeAudit('wallet.adjustment', { amount: 2_500, reason: 'Correction' }, 'fr')).startsWith('+2,500DT')).toBe(true);
+    expect(describeAudit('wallet.settlement', { amount: 'x' }, 'fr')).toBe('');
   });
 
   it('indique le motif et le type de document', () => {

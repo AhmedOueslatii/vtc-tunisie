@@ -474,12 +474,73 @@ describe('back-office admin', () => {
       expect((await call('GET', '/admin/pricing/rules', adminToken)).body.find((r: any) => r.id === standard.id).baseFare).toBe(standard.baseFare);
     });
 
+    it('portefeuille : dette de commission, règlement, erreurs de saisie, blocage au plafond puis reprise', async () => {
+      const walletOf = async () => (await call('GET', `/admin/drivers/${driver.userId}/wallet`, adminToken)).body;
+      const { ceiling } = (await call('GET', '/admin/wallets/debts', adminToken)).body as { ceiling: number };
+      const initial = await walletOf();
+      expect(initial.debt).toBeGreaterThan(0); // la course de la fixture a été encaissée en espèces
+
+      await page.goto(`/drivers/${driver.userId}`);
+      const card = page.locator('section', { has: page.getByText('Dette de commissions', { exact: true }) });
+      await ui(card.getByRole('listitem').filter({ hasText: 'Commission' })).toHaveCount(1);
+      await shot('17-wallet-fr');
+
+      const settle = page.locator('details', { hasText: 'Enregistrer un règlement' });
+      const adjust = page.locator('details', { hasText: 'Ajustement manuel' });
+      const submit = async (form: typeof settle, fields: Record<string, string>) => {
+        await form.locator('summary').click();
+        for (const [label, value] of Object.entries(fields)) await form.getByLabel(label).fill(value);
+        await form.getByRole('button', { name: 'Enregistrer' }).click();
+      };
+
+      // Saisie illisible : jamais envoyée, la dette ne bouge pas
+      await submit(settle, { 'Montant (DT)': 'abc' });
+      await ui(page.getByText('Données invalides, vérifiez le formulaire.')).toBeVisible();
+      // Règlement supérieur à la dette : refusé par l'API, message traduit
+      await submit(settle, { 'Montant (DT)': String(ceiling / 1000 + 10) });
+      await ui(page.getByText('Le règlement dépasse la dette du chauffeur.')).toBeVisible();
+      expect((await walletOf()).debt).toBe(initial.debt);
+
+      // Règlement partiel avec la virgule décimale française
+      await submit(settle, { 'Montant (DT)': '1,5', 'Note (facultatif)': 'Remise en main propre' });
+      await ui(page.getByRole('status')).toContainText('Règlement enregistré');
+      const settled = card.getByRole('listitem').filter({ hasText: 'Règlement' });
+      await ui(settled).toHaveCount(1);
+      await ui(settled.getByText('+1,500 DT')).toBeVisible();
+      await ui(settled.getByText('Remise en main propre', { exact: false })).toBeVisible();
+      expect((await walletOf()).debt).toBe(initial.debt - 1_500);
+
+      // Pénalité au-delà du plafond : le chauffeur est bloqué, la page des dettes le montre
+      await submit(adjust, { 'Montant (DT)': `-${ceiling / 1000 + 5}`, Motif: 'Pénalité (test)' });
+      await ui(page.getByRole('status')).toContainText('Ajustement enregistré');
+      expect((await walletOf()).state).toBe('blocked');
+      await ui(page.getByText('Bloqué', { exact: true }).first()).toBeVisible();
+      expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).body.code).toBe('DEBT_LIMIT_REACHED');
+
+      await page.goto('/wallets');
+      const row = page.getByRole('row').filter({ hasText: driverName });
+      await ui(row.getByText('Bloqué')).toBeVisible();
+      await shot('18-wallets-fr');
+      await page.goto('/');
+      await ui(page.getByText('Dettes de commission', { exact: true })).toBeVisible();
+
+      // Règlement de toute la dette : le chauffeur peut reprendre
+      const { debt } = await walletOf();
+      await page.goto(`/drivers/${driver.userId}`);
+      await submit(settle, { 'Montant (DT)': (debt / 1000).toFixed(3) });
+      await ui(page.getByRole('status')).toContainText('Règlement enregistré');
+      expect(await walletOf()).toMatchObject({ balance: 0, debt: 0, state: 'ok' });
+      expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
+    });
+
     it('journal : décisions et modification de tarification avec valeur avant → après', async () => {
       await page.goto('/audit');
       await page.getByRole('heading', { name: 'Journal des actions', level: 1 }).waitFor();
       await ui(page.getByText('Tarification modifiée').first()).toBeVisible();
       await ui(page.getByText(/Prise en charge : 1,500 DT → 2,500 DT/).first()).toBeVisible();
       await ui(page.getByText('Chauffeur validé').first()).toBeVisible();
+      await ui(page.getByText('Ajustement de portefeuille').first()).toBeVisible();
+      await ui(page.getByText('Règlement enregistré').first()).toBeVisible();
       await ui(page.getByText('Document refusé').first()).toBeVisible();
       await shot('15-audit-fr');
     });

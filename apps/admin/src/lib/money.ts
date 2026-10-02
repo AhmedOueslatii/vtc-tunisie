@@ -7,6 +7,15 @@ export function parseDinars(input: string): number | null {
   return Math.round(Number.parseFloat(value) * 1000);
 }
 
+/** Comme `parseDinars`, avec un signe facultatif (« -5 », « +2,5 ») : pour les ajustements, qui peuvent être négatifs. */
+export function parseSignedDinars(input: string): number | null {
+  const trimmed = input.trim();
+  const negative = trimmed.startsWith('-');
+  const millimes = parseDinars(trimmed.replace(/^[+-]/, ''));
+  if (millimes === null) return null;
+  return negative ? -millimes : millimes;
+}
+
 export const toDinarsInput = (millimes: number): string => (millimes / 1000).toFixed(3);
 
 /** « 20 » ou « 12,5 » (%) → points de base (2000 = 20 %) ; `null` si invalide (2 décimales maximum). */

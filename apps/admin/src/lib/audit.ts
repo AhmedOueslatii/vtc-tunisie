@@ -31,6 +31,11 @@ export function describeAudit(action: string, details: unknown, locale: Locale):
     );
     return [category, ...changes].filter(Boolean).join(' · ');
   }
+  if ((action === 'wallet.settlement' || action === 'wallet.adjustment') && typeof details.amount === 'number') {
+    const amount = `${details.amount > 0 && action === 'wallet.adjustment' ? '+' : ''}${formatDt(details.amount, locale)}`;
+    const why = typeof details.reason === 'string' ? details.reason : typeof details.note === 'string' ? details.note : '';
+    return [amount, why].filter(Boolean).join(' — ');
+  }
   if (action === 'ticket.update' && typeof details.status === 'string') return labelOf(locale, 'ticketStatus', details.status);
   const type = typeof details.type === 'string' ? labelOf(locale, 'docType', details.type) : '';
   const reason = typeof details.reason === 'string' ? details.reason : '';
