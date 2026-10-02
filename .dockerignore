@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.next
+**/build
+**/.dart_tool
+.git
+**/.env
+**/storage
+apps/passenger_app
+apps/driver_app
+apps/flutter-e2e
+packages/vtc_core
