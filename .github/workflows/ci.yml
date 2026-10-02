@@ -107,7 +107,11 @@ jobs:
         env:
           API_URL: http://localhost:3000
 
+      # NODE_ENV=production ici seulement : Next.js refuse de construire avec une autre valeur (« non-standard NODE_ENV »),
+      # alors que l'API a besoin de `development` pour accepter le code SMS fixe des tests.
       - name: Back-office — build et démarrage
+        env:
+          NODE_ENV: production
         run: |
           pnpm admin build
           API_URL=http://localhost:3000/v1 nohup pnpm admin start > admin.log 2>&1 &
