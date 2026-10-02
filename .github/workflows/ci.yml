@@ -1,0 +1,138 @@
+name: CI
+
+# Deux tâches indépendantes : la vérification rapide (types, tests unitaires, build) et les parcours complets,
+# qui démarrent l'API avec PostGIS et Redis puis pilotent le back-office dans un vrai navigateur.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Une nouvelle poussée annule l'exécution en cours de la même branche
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Types, tests unitaires, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version lue dans `packageManager` du package.json racine
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: API — types, tests, build
+        run: |
+          pnpm api typecheck
+          pnpm api test
+          pnpm api build
+
+      - name: Back-office — types, tests, build
+        run: |
+          pnpm admin typecheck
+          pnpm admin test
+          pnpm admin build
+
+  e2e:
+    name: Parcours complets (API et navigateur)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: vtc
+          POSTGRES_PASSWORD: vtc
+          POSTGRES_DB: vtc
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U vtc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    # Configuration de test uniquement : ces valeurs n'ont aucun usage hors de cette tâche.
+    # Le code OTP fixe est refusé par l'API en production (NODE_ENV).
+    env:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgres://vtc:vtc@localhost:5432/vtc
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-only-jwt-secret-ci-only-jwt-secret
+      OTP_SECRET: ci-only-otp-secret-ci-only-otp-secret
+      DATA_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      OTP_DEV_FIXED_CODE: '123456'
+      ADMIN_PHONE: '+21620000000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: API — build, migrations, données de départ
+        run: |
+          pnpm api build
+          pnpm api db:migrate
+          pnpm api db:seed
+
+      - name: API — démarrage
+        run: |
+          nohup pnpm api start > api.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fs http://localhost:3000/v1/health && exit 0
+            sleep 1
+          done
+          echo "L'API n'a pas démarré :"; cat api.log; exit 1
+
+      - name: API — parcours complet
+        run: pnpm api test:e2e
+        env:
+          API_URL: http://localhost:3000
+
+      - name: Back-office — build et démarrage
+        run: |
+          pnpm admin build
+          API_URL=http://localhost:3000/v1 nohup pnpm admin start > admin.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fs -o /dev/null http://localhost:3001/login && exit 0
+            sleep 1
+          done
+          echo "Le back-office n'a pas démarré :"; cat admin.log; exit 1
+
+      - name: Navigateur (Chromium)
+        run: pnpm --filter @vtc/admin exec playwright install --with-deps chromium
+
+      - name: Back-office — parcours dans le navigateur
+        run: pnpm admin test:e2e
+        env:
+          ADMIN_URL: http://localhost:3001
+          API_URL: http://localhost:3000/v1
+
+      # Les journaux des serveurs sont le seul moyen de comprendre un échec survenu sur la machine de CI
+      - name: Journaux des serveurs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journaux-serveurs
+          path: |
+            api.log
+            admin.log
+          if-no-files-found: ignore
