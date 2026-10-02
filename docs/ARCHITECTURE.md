@@ -125,6 +125,7 @@ Chauffeur
   POST /v1/drivers/me/location     { points: [{ lat, lng, heading?, speed?, ts }] }
   POST /v1/drivers/me/documents    multipart { type, expiresAt?, file }  (JPEG/PNG/PDF, 5 Mo ; assurance : expiresAt obligatoire)
   GET  /v1/drivers/me/documents    dernière version de chaque pièce + statut de revue
+  GET  /v1/drivers/me/wallet?days&limit&cursor   solde, dette, plafond, gains (brut / commission / net) et mouvements
 Adresses
   GET  /v1/places/search?q&lat&lng&limit   autocomplétion (fr/ar, Tunisie), triée par proximité si lat/lng → [{ id, name, address, lat, lng }]
   GET  /v1/places/reverse?lat&lng           adresse d'un point de la carte → { place | null }
@@ -162,6 +163,10 @@ Admin
   GET  /v1/admin/pricing/rules | PATCH /v1/admin/pricing/rules/:id   tarification (millimes) ; modification journalisée, la règle par défaut ne peut pas être désactivée
   GET  /v1/admin/stats/overview?days=7|30|90                 activité en direct + indicateurs et courbe quotidienne (jours calendaires à Tunis)
   GET  /v1/admin/audit?entity&limit&cursor                   journal des actions admin (qui, quoi, avant/après)
+  GET  /v1/admin/wallets/debts                               chauffeurs endettés, du plus au moins endetté, avec le plafond
+  GET  /v1/admin/drivers/:id/wallet                          solde et mouvements d'un chauffeur
+  POST /v1/admin/drivers/:id/wallet/settlements { amount, note? }   règlement d'une dette (jamais au-delà de la dette)
+  POST /v1/admin/drivers/:id/wallet/adjustments { amount, reason }  correction signée et motivée (pénalité, erreur)
 WebSocket (namespace /rt, JWT au handshake)
   client→serveur : driver:location
   serveur→client : trip:offer, trip:offer_expired, trip:updated, driver:location (vers le passager de la course), notification:new (boîte de réception)

@@ -58,6 +58,10 @@ const schema = z
     ROUTING_PROVIDER: z.enum(['straight', 'osrm']).default('straight'),
     OSRM_URL: z.string().url().default('http://localhost:5000'),
 
+    // Portefeuille chauffeur (millimes) : au-delà de cette dette de commissions cash, le chauffeur ne peut plus passer en ligne.
+    // [À VALIDER] valeur de travail, à caler sur la réalité du marché et les coûts
+    DRIVER_DEBT_CEILING: z.coerce.number().int().min(1).default(50_000),
+
     // Courses
     QUOTE_TTL_S: z.coerce.number().int().default(300),
     CANCEL_FREE_WINDOW_S: z.coerce.number().int().default(120),

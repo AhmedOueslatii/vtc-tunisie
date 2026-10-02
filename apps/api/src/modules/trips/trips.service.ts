@@ -24,6 +24,7 @@ import { PresenceService, type VehicleCategory } from '../drivers/presence.servi
 import { MatchingService } from '../matching/matching.service.js';
 import { NotificationsService } from '../notifications/notifications.module.js';
 import { PricingService } from '../pricing/pricing.service.js';
+import { WalletService, type BalanceChange } from '../wallet/wallet.module.js';
 import { ROUTING_PROVIDER, type RoutingProvider } from '../routing/routing.provider.js';
 
 type Trip = typeof trips.$inferSelect;
@@ -44,6 +45,8 @@ interface Quote extends EstimateInput {
   price: number;
   surge: number;
   pricingRuleId: string;
+  /** Absent des devis émis avant l'introduction du taux figé : on retombe alors sur la règle tarifaire. */
+  commissionBps?: number;
 }
 
 const MIN_TRIP_M = 300;
@@ -62,6 +65,7 @@ export class TripsService {
     private readonly presence: PresenceService,
     private readonly realtime: RealtimeEmitter,
     private readonly notifications: NotificationsService,
+    private readonly wallet: WalletService,
   ) {}
 
   /** Devis : le prix affiché est garanti pendant QUOTE_TTL_S via `quoteId`. */
@@ -81,7 +85,16 @@ export class TripsService {
       durationS,
     );
     const quoteId = randomUUID();
-    const quote: Quote = { ...input, passengerId, distanceM, durationS, price, surge, pricingRuleId: rule.id };
+    const quote: Quote = {
+      ...input,
+      passengerId,
+      distanceM,
+      durationS,
+      price,
+      surge,
+      pricingRuleId: rule.id,
+      commissionBps: rule.commissionBps,
+    };
     const ttl = env().QUOTE_TTL_S;
     await this.redis.set(`quote:${quoteId}`, JSON.stringify(quote), 'EX', ttl);
     return {
@@ -131,6 +144,7 @@ export class TripsService {
           quotedPrice: quote.price,
           surgeMultiplier: quote.surge.toFixed(2),
           pricingRuleId: quote.pricingRuleId,
+          commissionBps: quote.commissionBps,
           paymentMethod: 'cash',
           idempotencyKey,
         })
@@ -273,10 +287,18 @@ export class TripsService {
     }
     const payment = await this.ensurePayment(trip);
     if (payment.status === 'pending') {
-      await this.db
-        .update(payments)
-        .set({ status: 'succeeded' })
-        .where(and(eq(payments.id, payment.id), eq(payments.status, 'pending')));
+      // Encaissement et commission dans la même transaction : jamais l'un sans l'autre. Le chauffeur a gardé le prix
+      // en espèces, il doit donc la commission à la plateforme (voir le module portefeuille).
+      let change: BalanceChange | null = null;
+      await this.db.transaction(async (tx) => {
+        const paid = await tx
+          .update(payments)
+          .set({ status: 'succeeded' })
+          .where(and(eq(payments.id, payment.id), eq(payments.status, 'pending')))
+          .returning({ id: payments.id });
+        if (paid.length > 0) change = await this.wallet.recordCommission(tx, { ...trip, driverId });
+      });
+      if (change) await this.wallet.afterChange(driverId, change);
     }
     return this.publish(trip, false); // statut inchangé : pas de nouvelle notification
   }

@@ -308,6 +308,125 @@ describe('parcours passager ↔ chauffeur', () => {
     expect((await call('GET', `/trips/${id}`, passenger.token)).body.payment.status).toBe('succeeded');
   });
 
+  it('portefeuille : commission due à l’encaissement, une seule fois, visible du chauffeur et de l’admin', async () => {
+    const { id, price } = completedTrip;
+    const rules = (await call('GET', '/admin/pricing/rules', admin.token)).body as any[];
+    const bps = rules.find((r) => r.category === 'standard' && r.zone === null).commissionBps as number;
+    const commission = Math.round((price * bps) / 10_000);
+
+    // L'encaissement a été confirmé deux fois dans le test précédent : une seule commission
+    const wallet = (await call('GET', '/drivers/me/wallet', driver.token)).body;
+    expect(wallet).toMatchObject({ balance: -commission, debt: commission, state: 'ok' });
+    expect(wallet.ceiling).toBeGreaterThan(commission);
+    const commissions = wallet.transactions.items.filter((t: any) => t.type === 'platform_commission');
+    expect(commissions).toHaveLength(1);
+    expect(commissions[0]).toMatchObject({ amount: -commission, balanceAfter: -commission, tripId: id });
+    expect(wallet.earnings).toMatchObject({ trips: 1, gross: price, commission, net: price - commission });
+
+    expect((await call('GET', `/admin/drivers/${driver.userId}/wallet`, passenger.token)).status).toBe(403);
+    const seen = (await call('GET', `/admin/drivers/${driver.userId}/wallet`, admin.token)).body;
+    expect(seen).toMatchObject({ balance: -commission, debt: commission });
+    const debts = (await call('GET', '/admin/wallets/debts?limit=100', admin.token)).body;
+    expect(debts.items.find((d: any) => d.driverId === driver.userId)).toMatchObject({ debt: commission, state: 'ok' });
+    expect((await call('GET', '/admin/wallets/debts', passenger.token)).status).toBe(403);
+  });
+
+  it('portefeuille : règlement partiel, jamais au-delà de la dette, tracé', async () => {
+    const before = (await call('GET', '/drivers/me/wallet', driver.token)).body;
+    const base = `/admin/drivers/${driver.userId}/wallet/settlements`;
+    expect((await call('POST', base, passenger.token, { amount: 100 })).status).toBe(403);
+    expect((await call('POST', base, admin.token, { amount: 0 })).status).toBe(400);
+    expect((await call('POST', base, admin.token, { amount: 1.5 })).status).toBe(400);
+
+    const tooMuch = await call('POST', base, admin.token, { amount: before.debt + 1 });
+    expect(tooMuch.status).toBe(409);
+    expect(tooMuch.body).toMatchObject({ code: 'SETTLEMENT_EXCEEDS_DEBT', details: { debt: before.debt } });
+
+    const noticed = next(driverSocket, 'notification:new', (n) => n.type === 'wallet.settlement');
+    const paid = await call('POST', base, admin.token, { amount: 1_000, note: 'Remise en main propre' });
+    expect(paid.status).toBe(200);
+    expect(paid.body).toMatchObject({ balance: before.balance + 1_000, debt: before.debt - 1_000 });
+    expect((await noticed).payload.title).toBe('Règlement enregistré');
+
+    const ledger = (await call('GET', '/drivers/me/wallet', driver.token)).body.transactions.items;
+    expect(ledger[0]).toMatchObject({ type: 'settlement', amount: 1_000, note: 'Remise en main propre' });
+    // Le grand livre reste cohérent : chaque ligne porte le solde qui en résulte
+    expect(ledger[0].balanceAfter).toBe(paid.body.balance);
+    expect(ledger[1].balanceAfter).toBe(ledger[0].balanceAfter - 1_000);
+
+    const audit = (await call('GET', '/admin/audit?entity=wallet&limit=5', admin.token)).body.items as any[];
+    expect(audit[0]).toMatchObject({ action: 'wallet.settlement', entityId: driver.userId, details: { amount: 1_000 } });
+  });
+
+  it('portefeuille : avertissement à 80 % du plafond, blocage au plafond, reprise après règlement', async () => {
+    const { ceiling, debt } = (await call('GET', '/drivers/me/wallet', driver.token)).body;
+    const adjust = (amount: number, reason?: string) =>
+      call('POST', `/admin/drivers/${driver.userId}/wallet/adjustments`, admin.token, { amount, reason });
+
+    // Une correction manuelle doit être motivée et non nulle
+    expect((await adjust(-1_000)).status).toBe(400);
+    expect((await adjust(0, 'rien')).status).toBe(400);
+    expect((await call('POST', `/admin/drivers/${driver.userId}/wallet/adjustments`, passenger.token, { amount: -1_000, reason: 'test' })).status).toBe(403);
+
+    // 85 % du plafond : avertissement, le chauffeur reste en ligne
+    expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
+    const warned = next(driverSocket, 'notification:new', (n) => n.type === 'wallet.debt_warning');
+    const toWarning = await adjust(-(Math.round(ceiling * 0.85) - debt), 'Pénalité (test)');
+    expect(toWarning.body.state).toBe('warning');
+    expect((await warned).payload.title).toBe('Dette de commission élevée');
+    expect((await call('GET', '/drivers/me', driver.token)).body.presence.status).toBe('online');
+
+    // Au plafond : mis hors ligne, prévenu (SMS en plus), et ne peut plus repasser en ligne
+    const blocked = next(driverSocket, 'notification:new', (n) => n.type === 'wallet.debt_limit');
+    const toLimit = await adjust(-Math.ceil(ceiling * 0.2), 'Pénalité (test)');
+    expect(toLimit.body.state).toBe('blocked');
+    expect((await blocked).payload.title).toBe('Compte bloqué : plafond de dette atteint');
+    expect((await call('GET', '/drivers/me', driver.token)).body.presence).toBeNull();
+    const refused = await call('POST', '/drivers/me/availability', driver.token, { online: true });
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ code: 'DEBT_LIMIT_REACHED', details: { ceiling, debt: toLimit.body.debt } });
+
+    // Règlement de la dette : le chauffeur peut reprendre
+    const cleared = await call('POST', `/admin/drivers/${driver.userId}/wallet/settlements`, admin.token, { amount: toLimit.body.debt });
+    expect(cleared.body).toMatchObject({ balance: 0, debt: 0, state: 'ok' });
+    expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
+    await driverSocket.emitWithAck('driver:location', { ...TUNIS_CENTRE, ts: Date.now() }); // les tests suivants ont besoin du chauffeur localisé
+
+    const actions = ((await call('GET', '/admin/audit?entity=wallet&limit=10', admin.token)).body.items as any[]).map((e) => e.action);
+    expect(actions).toEqual(expect.arrayContaining(['wallet.adjustment', 'wallet.settlement']));
+  });
+
+  it('portefeuille : la commission suit le taux du devis, pas celui du jour de l’encaissement', async () => {
+    const rules = (await call('GET', '/admin/pricing/rules', admin.token)).body as any[];
+    const standard = rules.find((r) => r.category === 'standard' && r.zone === null);
+    const setCommission = (bps: number) => call('PATCH', `/admin/pricing/rules/${standard.id}`, admin.token, { commissionBps: bps });
+
+    let tripId: string;
+    let price: number;
+    try {
+      expect((await setCommission(1_000)).status).toBe(200); // 10 % au moment du devis
+      const estimate = await call('POST', '/trips/estimate', passenger.token, { pickup: PICKUP, dropoff: LA_MARSA });
+      price = estimate.body.price;
+      const offerPromise = next(driverSocket, 'trip:offer');
+      const trip = await call('POST', '/trips', passenger.token, { quoteId: estimate.body.quoteId });
+      tripId = trip.body.id;
+      await offerPromise;
+    } finally {
+      expect((await setCommission(standard.commissionBps)).status).toBe(200); // retour au taux d'origine avant l'encaissement
+    }
+
+    expect((await call('POST', `/trips/${tripId}/accept`, driver.token)).status).toBe(200);
+    await driverSocket.emitWithAck('driver:location', { ...PICKUP, ts: Date.now() });
+    for (const step of ['arrived', 'start', 'complete', 'cash-collected']) {
+      expect((await call('POST', `/trips/${tripId}/${step}`, driver.token)).status).toBe(200);
+    }
+
+    const ledger = (await call('GET', '/drivers/me/wallet', driver.token)).body.transactions.items as any[];
+    const entry = ledger.find((t) => t.tripId === tripId);
+    expect(entry.amount).toBe(-Math.round(price * 0.1)); // 10 % et non le taux actuel
+    expect(standard.commissionBps).not.toBe(1_000); // le test n'a de sens que si le taux a bien changé entre-temps
+  });
+
   it('notation bidirectionnelle : une note par participant, moyenne mise à jour', async () => {
     const { id } = completedTrip;
     expect((await call('POST', `/trips/${id}/rating`, passenger.token, { score: 6 })).status).toBe(400);
@@ -354,7 +473,8 @@ describe('parcours passager ↔ chauffeur', () => {
     expect(types).toEqual(expect.arrayContaining(['trip.driver_assigned', 'trip.driver_arrived', 'trip.completed']));
     expect(inbox.body.unread).toBeGreaterThanOrEqual(3);
 
-    const completed = inbox.body.items.find((n: any) => n.type === 'trip.completed');
+    // Plusieurs courses terminées dans ce parcours : on cible celle du test
+    const completed = inbox.body.items.find((n: any) => n.type === 'trip.completed' && n.payload.data.tripId === completedTrip.id);
     expect(completed.payload.body).toMatch(/DT/);
     expect(completed.payload.data.tripId).toBe(completedTrip.id);
     expect(completed.readAt).toBeNull();
@@ -604,6 +724,9 @@ describe('parcours passager ↔ chauffeur', () => {
     const { status, body } = await call('GET', '/admin/stats/overview?days=7', admin.token);
     expect(status).toBe(200);
     expect(body.live.availableDrivers).toBeGreaterThanOrEqual(1); // le chauffeur du test est en ligne
+    // Le chauffeur du test doit encore la commission de la course au taux figé : la dette totale n'est pas nulle
+    expect(body.live.totalDebt).toBeGreaterThan(0);
+    expect(body.live.driversInDebt).toBeGreaterThanOrEqual(1);
     expect(body.totals.completed).toBeGreaterThanOrEqual(1);
     expect(body.totals.grossRevenue).toBeGreaterThanOrEqual(completedTrip.price);
     expect(body.totals.estimatedCommission).toBeGreaterThan(0);

@@ -12,6 +12,9 @@ export const NOTIFICATION_TYPES = [
   'driver.rejected',
   'driver.document_rejected',
   'support.ticket_updated',
+  'wallet.debt_warning',
+  'wallet.debt_limit',
+  'wallet.settlement',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -120,6 +123,42 @@ export const DEFINITIONS: Record<NotificationType, Definition> = {
     text: (p) => ({
       fr: { title: 'Document refusé', body: `${p.reason}. Merci d'en envoyer un nouveau.` },
       ar: { title: 'تم رفض المستند', body: `${p.reason}. يرجى إرسال مستند جديد.` },
+    }),
+  },
+  'wallet.debt_warning': {
+    inbox: true,
+    sms: false,
+    text: (p) => ({
+      fr: {
+        title: 'Dette de commission élevée',
+        body: `Vous devez ${dt(Number(p.debt), 'fr')} à la plateforme (plafond ${dt(Number(p.ceiling), 'fr')}). Réglez-la pour continuer à recevoir des courses.`,
+      },
+      ar: {
+        title: 'ارتفاع دين العمولة',
+        body: `عليك ${dt(Number(p.debt), 'ar')} للمنصة (الحد الأقصى ${dt(Number(p.ceiling), 'ar')}). سدّد المبلغ لمواصلة استقبال الرحلات.`,
+      },
+    }),
+  },
+  'wallet.debt_limit': {
+    inbox: true,
+    sms: true,
+    text: (p) => ({
+      fr: {
+        title: 'Compte bloqué : plafond de dette atteint',
+        body: `Vous devez ${dt(Number(p.debt), 'fr')}. Réglez votre dette pour repasser en ligne.`,
+      },
+      ar: {
+        title: 'تم إيقاف الحساب: بلغ الدين الحد الأقصى',
+        body: `عليك ${dt(Number(p.debt), 'ar')}. سدّد الدين لتعود إلى العمل.`,
+      },
+    }),
+  },
+  'wallet.settlement': {
+    inbox: true,
+    sms: false,
+    text: (p) => ({
+      fr: { title: 'Règlement enregistré', body: `${dt(Number(p.amount), 'fr')} reçus. Dette restante : ${dt(Number(p.debt), 'fr')}.` },
+      ar: { title: 'تم تسجيل التسوية', body: `تم استلام ${dt(Number(p.amount), 'ar')}. الدين المتبقي: ${dt(Number(p.debt), 'ar')}.` },
     }),
   },
   'support.ticket_updated': {

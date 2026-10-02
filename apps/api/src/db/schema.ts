@@ -247,6 +247,8 @@ export const trips = pgTable(
     quotedPrice: integer('quoted_price').notNull(),
     finalPrice: integer('final_price'),
     surgeMultiplier: numeric('surge_multiplier', { precision: 4, scale: 2 }).notNull().default('1.00'),
+    /** Taux de commission figé à la commande, comme le prix : une modification de la tarification ne change pas une course déjà commandée. */
+    commissionBps: integer('commission_bps'),
     pricingRuleId: uuid('pricing_rule_id')
       .notNull()
       .references(() => pricingRules.id),
@@ -372,7 +374,13 @@ export const walletTransactions = pgTable(
     note: text('note'),
     createdAt: createdAt(),
   },
-  (t) => [index('wallet_tx_wallet_idx').on(t.walletId, t.createdAt)],
+  (t) => [
+    index('wallet_tx_wallet_idx').on(t.walletId, t.createdAt),
+    // Une course ne génère qu'une commission, même si l'encaissement est confirmé deux fois en même temps
+    uniqueIndex('wallet_tx_one_commission_per_trip')
+      .on(t.tripId)
+      .where(sql`${t.type} = 'platform_commission' AND ${t.tripId} IS NOT NULL`),
+  ],
 );
 
 // ─── Confiance & support ─────────────────────────────────────────────────────

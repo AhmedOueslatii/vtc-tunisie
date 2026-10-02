@@ -1,0 +1,2 @@
+ALTER TABLE "trips" ADD COLUMN "commission_bps" integer;--> statement-breakpoint
+CREATE UNIQUE INDEX "wallet_tx_one_commission_per_trip" ON "wallet_transactions" USING btree ("trip_id") WHERE "wallet_transactions"."type" = 'platform_commission' AND "wallet_transactions"."trip_id" IS NOT NULL;

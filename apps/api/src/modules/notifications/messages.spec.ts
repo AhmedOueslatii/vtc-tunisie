@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFINITIONS, NOTIFICATION_TYPES, renderNotification } from './messages.js';
 
-const params = { distanceM: 700, price: 12_300, driverName: 'Sami', plate: '123TU4567', reason: 'Photo floue', status: 'in_progress' };
+const params = { distanceM: 700, price: 12_300, debt: 42_000, ceiling: 50_000, amount: 10_000, driverName: 'Sami', plate: '123TU4567', reason: 'Photo floue', status: 'in_progress' };
 
 describe('messages de notification', () => {
   it.each(NOTIFICATION_TYPES)('%s : rendu en français et en arabe, sans valeur manquante', (type) => {
@@ -25,9 +25,9 @@ describe('messages de notification', () => {
 
   it('les offres ne vont que sur push ; les événements critiques sont doublés par SMS', () => {
     expect(DEFINITIONS['trip.offer']).toMatchObject({ inbox: false, sms: false });
-    for (const type of ['driver.approved', 'driver.rejected', 'trip.cancelled_by_driver'] as const) {
+    for (const type of ['driver.approved', 'driver.rejected', 'trip.cancelled_by_driver', 'wallet.debt_limit'] as const) {
       expect(DEFINITIONS[type].sms).toBe(true);
     }
-    expect(NOTIFICATION_TYPES.filter((t) => DEFINITIONS[t].sms)).toHaveLength(3);
+    expect(NOTIFICATION_TYPES.filter((t) => DEFINITIONS[t].sms)).toHaveLength(4);
   });
 });

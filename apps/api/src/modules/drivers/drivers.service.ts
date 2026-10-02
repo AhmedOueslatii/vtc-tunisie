@@ -7,7 +7,8 @@ import { AppError, Errors } from '../../common/errors.js';
 import type { LatLng } from '../../common/geo.js';
 import { env } from '../../config/env.js';
 import { DB, type Db } from '../../db/db.js';
-import { driverProfiles, locationPoints, users, vehicles } from '../../db/schema.js';
+import { driverProfiles, locationPoints, users, vehicles, wallets } from '../../db/schema.js';
+import { debtOf, debtState } from '../wallet/commission.js';
 import { RealtimeEmitter } from '../../infra/infra.module.js';
 import { PresenceService, type VehicleCategory } from './presence.service.js';
 
@@ -154,7 +155,16 @@ export class DriversService {
       .from(vehicles)
       .where(and(eq(vehicles.driverId, driverId), eq(vehicles.isActive, true)));
     if (!vehicle) throw new AppError('NO_ACTIVE_VEHICLE', 'Aucun véhicule actif', HttpStatus.FORBIDDEN);
-    // Phase 1b : refuser si la dette de commissions cash dépasse le plafond.
+    // Dette de commissions cash : au plafond, il faut régler avant de reprendre
+    const [wallet] = await this.db.select({ balance: wallets.balance }).from(wallets).where(eq(wallets.userId, driverId));
+    const debt = debtOf(wallet?.balance ?? 0);
+    const ceiling = env().DRIVER_DEBT_CEILING;
+    if (debtState(debt, ceiling) === 'blocked') {
+      throw new AppError('DEBT_LIMIT_REACHED', 'Plafond de dette de commissions atteint : régler pour reprendre', HttpStatus.FORBIDDEN, {
+        debt,
+        ceiling,
+      });
+    }
 
     const current = await this.presence.getState(driverId);
     if (current?.status !== 'on_trip') await this.presence.goOnline(driverId, vehicle.category, vehicle.id);

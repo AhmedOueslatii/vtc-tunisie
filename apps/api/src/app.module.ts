@@ -14,6 +14,7 @@ import { PlacesModule } from './modules/places/places.module.js';
 import { SupportModule } from './modules/support/support.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.server.js';
 import { TripsModule } from './modules/trips/trips.module.js';
+import { WalletModule } from './modules/wallet/wallet.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 
 @Public()
@@ -33,7 +34,7 @@ class HealthController {
 }
 
 @Module({
-  imports: [InfraModule, AuthModule, AuditModule, NotificationsModule, UsersModule, DriversModule, MatchingModule, TripsModule, PlacesModule, RealtimeModule, SupportModule, AdminModule],
+  imports: [InfraModule, AuthModule, AuditModule, NotificationsModule, UsersModule, DriversModule, MatchingModule, TripsModule, PlacesModule, RealtimeModule, SupportModule, WalletModule, AdminModule],
   controllers: [HealthController],
 })
 export class AppModule {}

@@ -33,7 +33,7 @@ export class AdminStatsController {
     // La Tunisie est à UTC+1 toute l'année (plus d'heure d'été depuis 2008).
     const since = new Date(`${tunisDay(days - 1)}T00:00:00+01:00`);
 
-    const [statusRows, money, dailyRows, live, newUsers] = await Promise.all([
+    const [statusRows, money, dailyRows, live, debt, newUsers] = await Promise.all([
       this.db
         .select({ status: trips.status, count: sql<number>`count(*)::int` })
         .from(trips)
@@ -42,7 +42,7 @@ export class AdminStatsController {
       // Chiffre d'affaires brut et commission estimée (taux de la règle appliquée à chaque course terminée)
       this.db.execute<{ gross: number; commission: number }>(sql`
         SELECT COALESCE(SUM(t.final_price), 0)::float8 AS gross,
-               COALESCE(SUM(t.final_price * r.commission_bps / 10000.0), 0)::float8 AS commission
+               COALESCE(SUM(t.final_price * COALESCE(t.commission_bps, r.commission_bps) / 10000.0), 0)::float8 AS commission
         FROM trips t JOIN pricing_rules r ON r.id = t.pricing_rule_id
         WHERE t.status = 'completed' AND t.requested_at >= ${since}`),
       this.db.execute<DailyRow>(sql`
@@ -64,6 +64,8 @@ export class AdminStatsController {
           .from(supportTickets)
           .where(inArray(supportTickets.status, ['open', 'in_progress'])),
       ]),
+      this.db.execute<{ total: number; drivers: number }>(sql`
+        SELECT COALESCE(SUM(-balance), 0)::float8 AS total, count(*)::int AS drivers FROM wallets WHERE balance < 0`),
       this.db.execute<{ passengers: number; drivers: number }>(sql`
         SELECT (SELECT count(*) FROM users WHERE created_at >= ${since})::int AS passengers,
                (SELECT count(*) FROM driver_profiles WHERE approved_at >= ${since})::int AS drivers`),
@@ -90,6 +92,9 @@ export class AdminStatsController {
         availableDrivers: available,
         pendingDrivers: pendingDrivers[0]?.count ?? 0,
         openTickets: openTickets[0]?.count ?? 0,
+        // Commissions cash dues par les chauffeurs à la plateforme
+        totalDebt: Math.round(debt.rows[0]?.total ?? 0),
+        driversInDebt: debt.rows[0]?.drivers ?? 0,
       },
       totals: {
         requested,
