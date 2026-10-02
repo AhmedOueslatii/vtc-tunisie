@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+
+/* Jetons de couleur : thème clair par défaut, thème sombre selon les préférences du système. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --fg: #111827;
+  --muted: #5b6472;
+  --line: #e3e6eb;
+  --accent: #0f766e;
+  --accent-fg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0e11;
+    --card: #15181d;
+    --fg: #e6e8eb;
+    --muted: #98a1ae;
+    --line: #272c34;
+    --accent: #2dd4bf;
+    --accent-fg: #06201d;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Segoe UI', Tahoma, system-ui, -apple-system, 'Noto Sans Arabic', Arial, sans-serif;
+}
+
+/* Couleur des séries des graphiques : emplacement 1 de la palette de visualisation (validée clair et sombre) */
+:root {
+  --series-1: #2a78d6;
+  --series-1-hover: #5598e7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-1: #3987e5;
+    --series-1-hover: #6da7ec;
+  }
+}

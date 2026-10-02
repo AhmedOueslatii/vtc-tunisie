@@ -4,6 +4,7 @@
   "packageManager": "pnpm@10.14.0",
   "scripts": {
     "api": "pnpm --filter @vtc/api",
+    "admin": "pnpm --filter @vtc/admin",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down"
   }
