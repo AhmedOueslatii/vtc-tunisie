@@ -1,5 +1,5 @@
 import { formatDt, formatPercent } from './format';
-import { type Locale, labelOf } from './intl';
+import { createT, type Locale, labelOf } from './intl';
 
 type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -35,6 +35,12 @@ export function describeAudit(action: string, details: unknown, locale: Locale):
     const amount = `${details.amount > 0 && action === 'wallet.adjustment' ? '+' : ''}${formatDt(details.amount, locale)}`;
     const why = typeof details.reason === 'string' ? details.reason : typeof details.note === 'string' ? details.note : '';
     return [amount, why].filter(Boolean).join(' — ');
+  }
+  if (action.startsWith('export.') && typeof details.from === 'string' && typeof details.to === 'string') {
+    return createT(locale)('audit.exportRows', { from: details.from, to: details.to, rows: typeof details.rows === 'number' ? details.rows : 0 });
+  }
+  if (action === 'user.reactivate') {
+    return typeof details.previousReason === 'string' ? createT(locale)('audit.suspendedFor', { reason: details.previousReason }) : '';
   }
   if (action === 'ticket.update' && typeof details.status === 'string') return labelOf(locale, 'ticketStatus', details.status);
   const type = typeof details.type === 'string' ? labelOf(locale, 'docType', details.type) : '';

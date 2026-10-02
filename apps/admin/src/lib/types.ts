@@ -185,6 +185,34 @@ export interface DebtsView {
   items: { driverId: string; fullName: string | null; phone: string; balance: number; debt: number; state: WalletState }[];
 }
 
+export type UserStatus = 'active' | 'suspended' | 'deleted';
+export type UserRole = 'passenger' | 'driver' | 'admin';
+
+export interface UserRow {
+  id: string;
+  phone: string;
+  fullName: string | null;
+  status: UserStatus;
+  isAdmin: boolean;
+  locale: string;
+  ratingAvg: string | null;
+  ratingCount: number;
+  createdAt: string;
+  suspensionReason: string | null;
+  suspendedAt: string | null;
+  driverStatus: DriverStatus | null;
+}
+
+export interface UserDetail extends Omit<UserRow, 'driverStatus'> {
+  email: string | null;
+  driver: { status: DriverStatus } | null;
+  trips: { asPassenger: number; asDriver: number };
+  activeTripId: string | null;
+}
+
+export const roleOf = (user: { isAdmin: boolean; driverStatus?: unknown; driver?: unknown }): UserRole =>
+  user.isAdmin ? 'admin' : user.driverStatus || user.driver ? 'driver' : 'passenger';
+
 export interface Overview {
   range: { days: number };
   live: { activeTrips: number; availableDrivers: number; pendingDrivers: number; openTickets: number; totalDebt: number; driversInDebt: number };

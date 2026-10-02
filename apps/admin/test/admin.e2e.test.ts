@@ -6,7 +6,7 @@
  *
  * SCREENSHOT_DIR=<dossier> enregistre des captures de chaque écran, en français et en arabe.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { Redis } from 'ioredis';
@@ -533,16 +533,125 @@ describe('back-office admin', () => {
       expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
     });
 
+    it('utilisateurs : recherche, suspension refusée pendant une course, suspension immédiate, réactivation', async () => {
+      const name = `Karim ${digits(4)}`;
+      const victim = await login(mobile());
+      await call('PATCH', '/me', victim.token, { fullName: name });
+
+      // Recherche par nom, puis ouverture de la fiche
+      await page.goto('/users');
+      await page.getByLabel('Nom ou téléphone').fill(name);
+      await page.getByRole('button', { name: 'Rechercher' }).click();
+      const row = page.getByRole('row').filter({ hasText: name });
+      await ui(row).toHaveCount(1);
+      await ui(row.getByText('Passager')).toBeVisible();
+      await shot('19-users-fr');
+      await row.getByRole('link', { name }).click();
+      await page.getByRole('heading', { name, level: 1 }).waitFor();
+
+      const reason = page.getByLabel('Motif');
+      const suspend = page.getByRole('button', { name: 'Suspendre' });
+      await reason.fill('Comportement abusif');
+
+      // Course en cours : suspension refusée, message traduit, compte intact
+      const estimate = await call('POST', '/trips/estimate', victim.token, { pickup: PICKUP, dropoff: LA_MARSA });
+      const trip = await call('POST', '/trips', victim.token, { quoteId: estimate.body.quoteId });
+      await suspend.click();
+      await ui(page.getByText('Une course est en cours : attendez sa fin ou annulez-la avant de suspendre.')).toBeVisible();
+      expect((await call('GET', '/me', victim.token)).status).toBe(200);
+      await call('POST', `/trips/${trip.body.id}/cancel`, victim.token, {});
+
+      // Suspension : effet immédiat sur la session ouverte
+      await page.getByLabel('Motif').fill('Comportement abusif');
+      await page.getByRole('button', { name: 'Suspendre' }).click();
+      await ui(page.getByRole('status')).toContainText('Compte suspendu');
+      await ui(page.getByText('Motif : Comportement abusif')).toBeVisible();
+      await ui(page.getByText('Suspendu', { exact: true }).first()).toBeVisible();
+      await shot('20-user-suspended-fr');
+      const blocked = await call('GET', '/me', victim.token);
+      expect(blocked.status).toBe(403);
+      expect(blocked.body.code).toBe('ACCOUNT_SUSPENDED');
+
+      // Filtre « suspendus »
+      await page.goto(`/users?status=suspended&q=${encodeURIComponent(name)}`);
+      await ui(page.getByRole('row').filter({ hasText: name }).getByText('Suspendu')).toBeVisible();
+
+      // Réactivation
+      await page.getByRole('link', { name }).click();
+      await page.getByRole('button', { name: 'Réactiver' }).click();
+      await ui(page.getByRole('status')).toContainText('Compte réactivé');
+      await ui(page.getByText('Actif', { exact: true }).first()).toBeVisible();
+      expect((await call('GET', '/me', victim.token)).status).toBe(200);
+
+      // Un administrateur n'a pas de formulaire de suspension ; la fiche chauffeur mène au compte
+      await page.goto(`/users/${adminUserId}`);
+      await ui(page.getByText('Un compte administrateur ne peut pas être suspendu ici.')).toBeVisible();
+      await ui(page.getByRole('button', { name: 'Suspendre' })).toHaveCount(0);
+      await page.goto(`/drivers/${driver.userId}`);
+      await page.getByRole('link', { name: /Compte utilisateur/ }).click();
+      await page.waitForURL(`**/users/${driver.userId}`);
+      await ui(page.getByRole('link', { name: /Dossier chauffeur/ })).toBeVisible();
+    });
+
+    it('exports : téléchargement des deux fichiers CSV et erreur de période', async () => {
+      await page.goto('/exports');
+      await page.getByRole('heading', { name: 'Exports comptables', level: 1 }).waitFor();
+      await shot('21-exports-fr');
+      const buttons = page.getByRole('button', { name: /Télécharger/ });
+
+      const download = async (index: number) => {
+        const [file] = await Promise.all([page.waitForEvent('download'), buttons.nth(index).click()]);
+        const bytes = readFileSync((await file.path())!);
+        return { name: file.suggestedFilename(), bytes, text: bytes.toString('utf8').slice(1) };
+      };
+
+      const trips = await download(0);
+      expect(trips.name).toMatch(/^courses_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/);
+      expect([...trips.bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]); // BOM : Excel lit les accents directement
+      expect(trips.text.split('\r\n')[0]).toContain('Prix final (DT)');
+      expect(trips.text).toContain(tripId);
+      expect(trips.text).toContain('Espèces');
+
+      const earnings = await download(1);
+      expect(earnings.name).toMatch(/^gains-chauffeurs_/);
+      expect(earnings.text).toContain(driver.userId);
+
+      // Période inversée : pas de fichier, retour au formulaire avec un message traduit
+      await page.getByLabel('Du').fill('2026-10-05');
+      await page.getByLabel('Au').fill('2026-10-01');
+      await buttons.nth(0).click();
+      await page.waitForURL(/\/exports\?error=/);
+      await ui(page.getByText('Données invalides, vérifiez le formulaire.')).toBeVisible();
+    });
+
     it('journal : décisions et modification de tarification avec valeur avant → après', async () => {
       await page.goto('/audit');
       await page.getByRole('heading', { name: 'Journal des actions', level: 1 }).waitFor();
+      await shot('15-audit-fr');
+
+      // Les consultations de documents remplissent vite la première page : on retrouve une décision par type d'élément
+      const filterBy = async (value: string) => {
+        await page.getByLabel('Type d’élément').selectOption(value);
+        await page.getByRole('button', { name: 'Filtrer' }).click();
+        await page.waitForURL(new RegExp(`entity=${value}`));
+      };
+      await filterBy('pricing_rule');
       await ui(page.getByText('Tarification modifiée').first()).toBeVisible();
       await ui(page.getByText(/Prise en charge : 1,500 DT → 2,500 DT/).first()).toBeVisible();
+      await filterBy('driver');
       await ui(page.getByText('Chauffeur validé').first()).toBeVisible();
+      await ui(page.getByText('Documents consultés').first()).toBeVisible(); // consultation de pièces d'identité : tracée
+      await filterBy('wallet');
       await ui(page.getByText('Ajustement de portefeuille').first()).toBeVisible();
       await ui(page.getByText('Règlement enregistré').first()).toBeVisible();
+      await filterBy('user');
+      await ui(page.getByText('Compte suspendu').first()).toBeVisible();
+      await ui(page.getByText('Compte réactivé').first()).toBeVisible();
+      await filterBy('export');
+      await ui(page.getByText('Export des courses').first()).toBeVisible();
+      await ui(page.getByText('Export des gains chauffeurs').first()).toBeVisible();
+      await filterBy('document');
       await ui(page.getByText('Document refusé').first()).toBeVisible();
-      await shot('15-audit-fr');
     });
   });
 

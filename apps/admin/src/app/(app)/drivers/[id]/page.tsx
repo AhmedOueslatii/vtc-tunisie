@@ -89,6 +89,11 @@ export default async function DriverPage({
             </Field>
             <Field label={t('driver.licenseExpiry')}>{formatDate(driver.licenseExpiry, locale)}</Field>
           </dl>
+          <p className="mt-4 text-sm">
+            <Link href={`/users/${driver.userId}`} className="text-accent hover:underline">
+              {t('driver.account')} →
+            </Link>
+          </p>
           {driver.rejectionReason && (
             <p className="mt-4 text-sm text-red-700 dark:text-red-300">
               {t('driver.rejectionReason', { reason: driver.rejectionReason })}
