@@ -157,6 +157,7 @@ describe('parcours passager ↔ chauffeur', () => {
       expect(sent.status).toBe(201);
       expect(sent.body.status).toBe('pending');
       expect(sent.body.storageKey).toBeUndefined();
+      expect(sent.body.mimeType).toBe('image/png');
     }
     // Dossier complet : il entre dans la file de validation de l'admin
     expect((await call('GET', '/drivers/me', driver.token)).body.status).toBe('under_review');
@@ -181,6 +182,31 @@ describe('parcours passager ↔ chauffeur', () => {
       headers: { authorization: `Bearer ${driver.token}` },
     });
     expect(driverAttempt.status).toBe(403);
+
+    // Liens signés : le navigateur de l'admin charge le scan directement depuis l'API, sans jeton
+    expect((await call('POST', `/admin/drivers/${driver.userId}/documents/links`, passenger.token, {})).status).toBe(403);
+    const issued = await call('POST', `/admin/drivers/${driver.userId}/documents/links`, admin.token, {});
+    expect(issued.status).toBe(200);
+    expect(Object.keys(issued.body.links).sort()).toEqual(detail.body.documents.map((d: any) => d.id).sort());
+    expect(new Date(issued.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+
+    const link = `${API}/v1${issued.body.links[cinDoc.id]}`;
+    const viaLink = await fetch(link);
+    expect(viaLink.status).toBe(200);
+    expect(viaLink.headers.get('content-type')).toBe('image/png');
+    expect(viaLink.headers.get('cache-control')).toContain('no-store');
+    expect(Buffer.from(await viaLink.arrayBuffer()).subarray(0, 4).toString('hex')).toBe('89504e47');
+
+    // Un lien ne vaut que pour son document, son échéance et sa signature
+    const otherDoc = detail.body.documents.find((d: any) => d.id !== cinDoc.id);
+    expect((await fetch(link.replace(cinDoc.id, otherDoc.id))).status).toBe(403);
+    expect((await fetch(link.replace(/e=\d+/, 'e=9999999999'))).status).toBe(403);
+    expect((await fetch(link.replace(/s=([\w-]+)/, (_, sig) => `s=${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`))).status).toBe(403);
+    expect((await fetch(`${API}/v1/documents/${cinDoc.id}/file`)).status).toBe(400); // sans signature
+    // On ne demande pas de lien pour le document d'un autre compte
+    const foreign = await call('POST', `/admin/drivers/${passenger.userId}/documents/links`, admin.token, { documentIds: [cinDoc.id] });
+    expect(foreign.status).toBe(404);
+    expect((await call('POST', `/admin/drivers/${driver.userId}/documents/links`, admin.token, { documentIds: [] })).status).toBe(400);
 
     // Un document refusé renvoie le dossier au chauffeur, qui le remplace
     const docUrl = (id: string, action: string) => `/admin/drivers/${driver.userId}/documents/${id}/${action}`;
@@ -530,6 +556,144 @@ describe('parcours passager ↔ chauffeur', () => {
       dropoffAddress: `${name}, ${address}`,
     });
     expect(estimate.status).toBe(200);
+  });
+
+  it('supervision des courses : liste filtrable et dossier complet', async () => {
+    const { id } = completedTrip;
+    expect((await call('GET', '/admin/trips', passenger.token)).status).toBe(403);
+    expect((await call('GET', '/admin/trips?status=nope', admin.token)).status).toBe(400);
+
+    const all = (await call('GET', '/admin/trips?limit=50', admin.token)).body.items as any[];
+    const listed = all.find((t) => t.id === id);
+    expect(listed).toMatchObject({ status: 'completed', passenger: { id: passenger.userId }, driver: { id: driver.userId } });
+    expect(listed.driver.phone).toMatch(/^\+216/);
+
+    const completed = (await call('GET', '/admin/trips?status=completed&limit=50', admin.token)).body.items as any[];
+    expect(completed.map((t) => t.id)).toContain(id);
+    expect(completed.every((t) => t.status === 'completed')).toBe(true);
+    const active = (await call('GET', '/admin/trips?status=active&limit=50', admin.token)).body.items as any[];
+    expect(active.map((t) => t.id)).not.toContain(id);
+
+    const page1 = await call('GET', '/admin/trips?limit=1', admin.token);
+    expect(page1.body.items).toHaveLength(1);
+    const page2 = await call('GET', `/admin/trips?limit=1&cursor=${encodeURIComponent(page1.body.nextCursor)}`, admin.token);
+    expect(page2.body.items[0].id).not.toBe(page1.body.items[0].id);
+
+    const detail = await call('GET', `/admin/trips/${id}`, admin.token);
+    expect(detail.status).toBe(200);
+    expect(detail.body.vehicle.plate).toMatch(/TU/);
+    expect(detail.body.payment).toMatchObject({ method: 'cash', status: 'succeeded' });
+    expect(detail.body.events.map((e: any) => e.toStatus)).toEqual([
+      'requested',
+      'driver_assigned',
+      'driver_arrived',
+      'in_progress',
+      'completed',
+    ]);
+    expect(detail.body.offers[0]).toMatchObject({ status: 'accepted', driver: { id: driver.userId } });
+    expect(detail.body.ratings).toHaveLength(2);
+    expect(detail.body.tickets.length).toBeGreaterThanOrEqual(1); // le signalement du test précédent
+    expect(detail.body.idempotencyKey).toBeUndefined();
+    expect((await call('GET', '/admin/trips/00000000-0000-4000-8000-000000000000', admin.token)).status).toBe(404);
+  });
+
+  it('tableau de bord : activité en direct et indicateurs de la période', async () => {
+    expect((await call('GET', '/admin/stats/overview', passenger.token)).status).toBe(403);
+    expect((await call('GET', '/admin/stats/overview?days=5', admin.token)).status).toBe(400);
+
+    const { status, body } = await call('GET', '/admin/stats/overview?days=7', admin.token);
+    expect(status).toBe(200);
+    expect(body.live.availableDrivers).toBeGreaterThanOrEqual(1); // le chauffeur du test est en ligne
+    expect(body.totals.completed).toBeGreaterThanOrEqual(1);
+    expect(body.totals.grossRevenue).toBeGreaterThanOrEqual(completedTrip.price);
+    expect(body.totals.estimatedCommission).toBeGreaterThan(0);
+    expect(body.totals.estimatedCommission).toBeLessThan(body.totals.grossRevenue);
+    expect(body.totals.completionRate).toBeGreaterThan(0);
+    expect(body.totals.completionRate).toBeLessThanOrEqual(1);
+    expect(body.totals.averagePrice).toBeGreaterThan(0);
+    expect(body.newUsers.passengers).toBeGreaterThanOrEqual(2);
+
+    // Courbe quotidienne : 7 jours consécutifs, sans trou, qui totalisent les indicateurs
+    expect(body.daily).toHaveLength(7);
+    const days = body.daily.map((d: any) => d.day);
+    expect(days).toEqual([...days].sort());
+    expect(new Set(days).size).toBe(7);
+    expect(body.daily.reduce((n: number, d: any) => n + d.completed, 0)).toBe(body.totals.completed);
+    expect(body.daily.reduce((n: number, d: any) => n + d.requested, 0)).toBe(body.totals.requested);
+    expect(body.daily.reduce((n: number, d: any) => n + d.revenue, 0)).toBe(body.totals.grossRevenue);
+    expect(body.daily.at(-1).completed).toBeGreaterThanOrEqual(1);
+
+    const month = await call('GET', '/admin/stats/overview?days=30', admin.token);
+    expect(month.body.daily).toHaveLength(30);
+    expect(month.body.totals.completed).toBeGreaterThanOrEqual(body.totals.completed);
+  });
+
+  it('tarification : modification contrôlée, journalisée, effective sur les nouveaux devis', async () => {
+    expect((await call('GET', '/admin/pricing/rules', passenger.token)).status).toBe(403);
+    const rules = (await call('GET', '/admin/pricing/rules', admin.token)).body as any[];
+    const standard = rules.find((r) => r.category === 'standard' && r.zone === null);
+    expect(standard).toBeTruthy();
+    expect(rules.some((r) => r.zone?.kind === 'airport')).toBe(true);
+
+    const quote = async () =>
+      (await call('POST', '/trips/estimate', passenger.token, { pickup: PICKUP, dropoff: LA_MARSA })).body.price as number;
+    const rule = (field: string, value: unknown) => call('PATCH', `/admin/pricing/rules/${standard.id}`, admin.token, { [field]: value });
+    // Le journal grossit à chaque exécution : on compte les entrées postérieures à un repère, pas le total
+    const newestAuditId = async () =>
+      ((await call('GET', '/admin/audit?entity=pricing_rule&limit=1', admin.token)).body.items[0]?.id ?? 0) as number;
+    const entriesSince = async (afterId: number) =>
+      ((await call('GET', '/admin/audit?entity=pricing_rule&limit=20', admin.token)).body.items as any[]).filter(
+        (e) => e.id > afterId && e.entityId === standard.id,
+      );
+
+    // Refus : montants invalides, corps vide, règle par défaut désactivée, règle inconnue
+    expect((await rule('baseFare', -1)).status).toBe(400);
+    expect((await rule('commissionBps', 9_000)).status).toBe(400);
+    expect((await call('PATCH', `/admin/pricing/rules/${standard.id}`, admin.token, {})).status).toBe(400);
+    expect((await rule('isActive', false)).body.code).toBe('DEFAULT_RULE_REQUIRED');
+    expect((await call('PATCH', '/admin/pricing/rules/00000000-0000-4000-8000-000000000000', admin.token, { baseFare: 1 })).status).toBe(404);
+    expect((await call('PATCH', `/admin/pricing/rules/${standard.id}`, passenger.token, { baseFare: 1 })).status).toBe(403);
+
+    const auditBaseline = await newestAuditId();
+    const priceBefore = await quote();
+    try {
+      // +1 DT sur la prise en charge ⇒ +1 DT sur le devis suivant
+      const updated = await rule('baseFare', standard.baseFare + 1_000);
+      expect(updated.status).toBe(200);
+      expect(updated.body.baseFare).toBe(standard.baseFare + 1_000);
+      expect(await quote()).toBe(priceBefore + 1_000);
+
+      // Une modification sans effet ne produit ni changement ni ligne d'audit
+      expect((await rule('baseFare', standard.baseFare + 1_000)).status).toBe(200);
+      const entries = await entriesSince(auditBaseline);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        action: 'pricing.update',
+        admin: { id: admin.userId },
+        details: { category: 'standard', before: { baseFare: standard.baseFare }, after: { baseFare: standard.baseFare + 1_000 } },
+      });
+    } finally {
+      expect((await rule('baseFare', standard.baseFare)).status).toBe(200);
+    }
+    expect(await quote()).toBe(priceBefore);
+  });
+
+  it("journal d'audit : décisions admin tracées, lecture réservée aux admins", async () => {
+    expect((await call('GET', '/admin/audit', passenger.token)).status).toBe(403);
+    const items = (await call('GET', '/admin/audit?limit=100', admin.token)).body.items as any[];
+    const actions = items.map((e) => `${e.action}:${e.entityId}`);
+    expect(actions).toContain(`driver.approve:${driver.userId}`);
+    // Consulter des pièces d'identité est tracé
+    expect(actions).toContain(`document.view:${driver.userId}`);
+    expect(items.some((e) => e.action === 'document.reject' && e.details.reason === 'Photo floue')).toBe(true);
+    expect(items.some((e) => e.action === 'document.approve')).toBe(true);
+    expect(items.some((e) => e.action === 'ticket.update' && e.details.status === 'resolved')).toBe(true);
+
+    const page1 = await call('GET', '/admin/audit?limit=2', admin.token);
+    expect(page1.body.items).toHaveLength(2);
+    const page2 = await call('GET', `/admin/audit?limit=2&cursor=${page1.body.nextCursor}`, admin.token);
+    expect(page2.body.items.map((e: any) => e.id)).not.toContain(page1.body.items[0].id);
+    expect(page2.body.items[0].id).toBeLessThan(page1.body.items[1].id);
   });
 
   it('refresh token : rotation puis déconnexion', async () => {

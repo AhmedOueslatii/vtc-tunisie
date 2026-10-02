@@ -432,6 +432,23 @@ export const deviceTokens = pgTable(
   (t) => [uniqueIndex('device_tokens_token').on(t.token), index('device_tokens_user_idx').on(t.userId)],
 );
 
+/** Journal des actions d'administration (décisions sur les chauffeurs, tarification…) : qui, quoi, quand, avant/après. */
+export const adminAuditLog = pgTable(
+  'admin_audit_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    adminId: uuid('admin_id')
+      .notNull()
+      .references(() => users.id),
+    action: text('action').notNull(), // ex. pricing.update, driver.approve
+    entity: text('entity').notNull(), // ex. pricing_rule, driver, document, ticket
+    entityId: text('entity_id').notNull(),
+    details: jsonb('details'),
+    at: ts('at').notNull().defaultNow(),
+  },
+  (t) => [index('admin_audit_at_idx').on(t.at), index('admin_audit_entity_idx').on(t.entity, t.entityId)],
+);
+
 export const notifications = pgTable(
   'notifications',
   {

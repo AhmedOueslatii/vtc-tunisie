@@ -12,6 +12,7 @@ import {
   Post,
   StreamableFile,
 } from '@nestjs/common';
+import { ApiBody } from '@nestjs/swagger';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { Errors } from '../../common/errors.js';
@@ -23,11 +24,16 @@ import type { AuthUser } from '../auth/tokens.service.js';
 import { DriversModule } from '../drivers/drivers.module.js';
 import { DocumentsService } from '../drivers/documents.service.js';
 import { DriversService } from '../drivers/drivers.service.js';
+import { AuditService } from '../audit/audit.module.js';
 import { NotificationsService } from '../notifications/notifications.module.js';
 import { TripsModule } from '../trips/trips.module.js';
 import { TripsService } from '../trips/trips.service.js';
+import { AdminPricingController } from './admin-pricing.controller.js';
+import { AdminStatsController } from './admin-stats.controller.js';
+import { AdminTripsController } from './admin-trips.controller.js';
 
 const rejectSchema = z.object({ reason: z.string().min(3).max(500) });
+const linksSchema = z.object({ documentIds: z.array(z.uuid()).min(1).max(20).optional() });
 
 /** API du back-office : validation des chauffeurs et de leurs pièces justificatives. */
 @AdminOnly()
@@ -39,6 +45,7 @@ export class AdminController {
     private readonly documents: DocumentsService,
     private readonly trips: TripsService,
     private readonly notifications: NotificationsService,
+    private readonly audit: AuditService,
   ) {}
 
   @Get('drivers/pending')
@@ -77,14 +84,38 @@ export class AdminController {
     return new StreamableFile(data, { type: mime, disposition: 'inline' });
   }
 
+  /**
+   * Liens signés et temporaires vers les scans (tous, ou ceux de `documentIds`). Consulter des pièces d'identité est
+   * une opération sensible : chaque émission est journalisée.
+   */
+  @Post('drivers/:id/documents/links')
+  @HttpCode(HttpStatus.OK)
+  @ApiBody({ required: false, schema: { type: 'object', properties: { documentIds: { type: 'array', items: { type: 'string', format: 'uuid' } } } } })
+  async documentLinks(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body(new ZodPipe(linksSchema)) body: z.infer<typeof linksSchema>,
+  ) {
+    const result = await this.documents.issueLinks(admin.id, id, body.documentIds);
+    void this.audit.recordSafe(admin.id, {
+      action: 'document.view',
+      entity: 'driver',
+      entityId: id,
+      details: { documentIds: Object.keys(result.links) },
+    });
+    return result;
+  }
+
   @Post('drivers/:id/documents/:docId/approve')
   @HttpCode(HttpStatus.OK)
-  approveDocument(
+  async approveDocument(
     @CurrentUser() admin: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Param('docId', ParseUUIDPipe) docId: string,
   ) {
-    return this.documents.review(admin.id, id, docId, 'approved');
+    const doc = await this.documents.review(admin.id, id, docId, 'approved');
+    void this.audit.recordSafe(admin.id, { action: 'document.approve', entity: 'document', entityId: docId, details: { driverId: id, type: doc.type } });
+    return doc;
   }
 
   @Post('drivers/:id/documents/:docId/reject')
@@ -97,6 +128,12 @@ export class AdminController {
   ) {
     const doc = await this.documents.review(admin.id, id, docId, 'rejected', body.reason);
     void this.notifications.notify(id, 'driver.document_rejected', { reason: body.reason }, { documentId: docId });
+    void this.audit.recordSafe(admin.id, {
+      action: 'document.reject',
+      entity: 'document',
+      entityId: docId,
+      details: { driverId: id, type: doc.type, reason: body.reason },
+    });
     return doc;
   }
 
@@ -117,12 +154,17 @@ export class AdminController {
       .returning({ userId: driverProfiles.userId, status: driverProfiles.status });
     if (!profile) throw Errors.notFound('Chauffeur en attente');
     void this.notifications.notify(id, 'driver.approved');
+    void this.audit.recordSafe(admin.id, { action: 'driver.approve', entity: 'driver', entityId: id });
     return profile;
   }
 
   @Post('drivers/:id/reject')
   @HttpCode(HttpStatus.OK)
-  async reject(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(rejectSchema)) body: z.infer<typeof rejectSchema>) {
+  async reject(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body(new ZodPipe(rejectSchema)) body: z.infer<typeof rejectSchema>,
+  ) {
     const [profile] = await this.db
       .update(driverProfiles)
       .set({ status: 'rejected', rejectionReason: body.reason })
@@ -130,9 +172,13 @@ export class AdminController {
       .returning({ userId: driverProfiles.userId, status: driverProfiles.status });
     if (!profile) throw Errors.notFound('Chauffeur');
     void this.notifications.notify(id, 'driver.rejected', { reason: body.reason });
+    void this.audit.recordSafe(admin.id, { action: 'driver.reject', entity: 'driver', entityId: id, details: { reason: body.reason } });
     return profile;
   }
 }
 
-@Module({ imports: [DriversModule, TripsModule], controllers: [AdminController] })
+@Module({
+  imports: [DriversModule, TripsModule],
+  controllers: [AdminController, AdminPricingController, AdminTripsController, AdminStatsController],
+})
 export class AdminModule {}

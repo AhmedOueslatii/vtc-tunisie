@@ -21,5 +21,10 @@ if (PROCESS_ROLE === 'worker') {
   app.get(RealtimeServer).attach(app.getHttpServer());
   if (NODE_ENV !== 'production') setupSwagger(app);
   await app.listen(PORT);
+  // Node ferme par défaut une connexion inactive après 5 s ; un client (back-office, proxy, load balancer) qui la réutilise
+  // au même instant perd sa requête. Le délai serveur doit dépasser celui des clients (convention : 65 s derrière un proxy).
+  const server = app.getHttpServer();
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
   Logger.log(`API (${PROCESS_ROLE}) sur http://localhost:${PORT}/v1`, 'Bootstrap');
 }

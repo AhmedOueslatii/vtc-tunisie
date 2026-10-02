@@ -143,6 +143,12 @@ export class PresenceService {
     );
   }
 
+  /** Chauffeurs disponibles (en ligne, hors course) d'après les index GEO ; peut inclure quelques inactifs jusqu'au prochain balayage. */
+  async countAvailable(): Promise<number> {
+    const counts = await Promise.all((['standard', 'premium', 'van'] as const).map((c) => this.redis.zcard(geoKey(c))));
+    return counts.reduce((a, b) => a + b, 0);
+  }
+
   /** Retire des index GEO les chauffeurs qui n'envoient plus de position (app tuée, perte réseau). */
   async sweepStale(): Promise<number> {
     const staleBefore = Date.now() - env().DRIVER_STALE_AFTER_S * 1000;

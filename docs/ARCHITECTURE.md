@@ -150,11 +150,18 @@ Courses
   POST /v1/trips/:id/cash-collected           (chauffeur : paiement cash `pending` → `succeeded`)
 Admin
   GET  /v1/admin/drivers/pending | /v1/admin/drivers/:id   file de validation, dossier (CIN/permis masqués) + pièces
-  GET  /v1/admin/drivers/:id/documents/:docId/file          scan (route authentifiée, jamais d'URL publique)
+  GET  /v1/admin/drivers/:id/documents/:docId/file          scan (avec jeton admin)
+  POST /v1/admin/drivers/:id/documents/links { documentIds? } → { links, expiresAt }   liens signés vers les scans (5 min), journalisés
+  GET  /v1/documents/:docId/file?e&a&s                       scan par lien signé (route publique : la signature fait foi, `no-store`)
   POST /v1/admin/drivers/:id/documents/:docId/approve|reject
   POST /v1/admin/drivers/:id/approve|reject                 approve exige les pièces DRIVER_REQUIRED_DOCUMENTS approuvées
   GET  /v1/admin/trips/:id/track                            trace GPS d'une course (litiges)
   GET  /v1/admin/tickets?status&limit&cursor | PATCH /v1/admin/tickets/:id  { status }
+  GET  /v1/admin/trips?status=active|<statut>&limit&cursor  supervision des courses (passager, chauffeur, prix, statut)
+  GET  /v1/admin/trips/:id                                   dossier complet : véhicule, paiement, historique des statuts, offres, notes, signalements
+  GET  /v1/admin/pricing/rules | PATCH /v1/admin/pricing/rules/:id   tarification (millimes) ; modification journalisée, la règle par défaut ne peut pas être désactivée
+  GET  /v1/admin/stats/overview?days=7|30|90                 activité en direct + indicateurs et courbe quotidienne (jours calendaires à Tunis)
+  GET  /v1/admin/audit?entity&limit&cursor                   journal des actions admin (qui, quoi, avant/après)
 WebSocket (namespace /rt, JWT au handshake)
   client→serveur : driver:location
   serveur→client : trip:offer, trip:offer_expired, trip:updated, driver:location (vers le passager de la course), notification:new (boîte de réception)

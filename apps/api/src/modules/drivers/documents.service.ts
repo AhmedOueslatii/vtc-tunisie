@@ -8,6 +8,7 @@ import { env } from '../../config/env.js';
 import { DB, type Db } from '../../db/db.js';
 import { type DocumentType, driverDocuments, driverProfiles } from '../../db/schema.js';
 import { STORAGE, type ObjectStorage } from '../../infra/storage.js';
+import { documentLinkPath, type LinkCheck, verifyDocumentLink } from './document-links.js';
 
 export interface UploadedDocument {
   buffer: Buffer;
@@ -18,8 +19,11 @@ type DocumentRow = typeof driverDocuments.$inferSelect;
 
 const MAX_DOCUMENTS_PER_DRIVER = 30;
 
-/** Ce que voit le chauffeur ou l'admin : jamais la clé de stockage. */
-const publicView = ({ storageKey: _k, ...doc }: DocumentRow) => doc;
+/** Ce que voit le chauffeur ou l'admin : le type du fichier, jamais la clé de stockage. */
+const publicView = ({ storageKey, ...doc }: DocumentRow) => ({
+  ...doc,
+  mimeType: mimeFromExt(extname(storageKey).slice(1)) ?? null,
+});
 
 @Injectable()
 export class DocumentsService {
@@ -100,6 +104,39 @@ export class DocumentsService {
         .where(and(eq(driverProfiles.userId, driverId), eq(driverProfiles.status, 'under_review')));
     }
     return publicView(reviewed);
+  }
+
+  /**
+   * Liens signés vers les scans, pour que le navigateur de l'admin les charge directement depuis l'API.
+   * Sans `documentIds` : la dernière version de chaque pièce du chauffeur.
+   */
+  async issueLinks(adminId: string, driverId: string, documentIds?: string[]) {
+    let chosen: { id: string }[];
+    if (documentIds) {
+      const owned = new Set((await this.listAll(driverId)).map((d) => d.id));
+      if (!documentIds.every((id) => owned.has(id))) throw Errors.notFound('Document');
+      chosen = documentIds.map((id) => ({ id }));
+    } else {
+      chosen = await this.list(driverId);
+    }
+
+    const { JWT_ACCESS_SECRET, DOCUMENT_LINK_TTL_S } = env();
+    const exp = Math.floor(Date.now() / 1000) + DOCUMENT_LINK_TTL_S;
+    return {
+      links: Object.fromEntries(chosen.map(({ id }) => [id, documentLinkPath(JWT_ACCESS_SECRET, { docId: id, adminId, exp })])),
+      expiresAt: new Date(exp * 1000),
+    };
+  }
+
+  /** Lecture via un lien signé : aucune session, la signature fait foi. */
+  async readSigned(docId: string, link: { exp: number; adminId: string; signature: string }) {
+    const check: LinkCheck = verifyDocumentLink(env().JWT_ACCESS_SECRET, { docId, adminId: link.adminId, exp: link.exp }, link.signature);
+    if (check !== 'ok') {
+      throw new AppError(check === 'expired' ? 'LINK_EXPIRED' : 'LINK_INVALID', 'Lien invalide ou expiré', HttpStatus.FORBIDDEN);
+    }
+    const [doc] = await this.db.select().from(driverDocuments).where(eq(driverDocuments.id, docId));
+    if (!doc) throw Errors.notFound('Document');
+    return { data: await this.storage.get(doc.storageKey), mime: mimeFromExt(extname(doc.storageKey).slice(1)) ?? 'application/octet-stream' };
   }
 
   /** Contenu d'un document, réservé au back-office. */

@@ -8,6 +8,7 @@ import { DB, type Db } from '../../db/db.js';
 import { supportTickets, trips, users } from '../../db/schema.js';
 import { AdminOnly, CurrentUser } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/tokens.service.js';
+import { AuditService } from '../audit/audit.module.js';
 import { NotificationsService } from '../notifications/notifications.module.js';
 
 const CATEGORIES = ['incident', 'lost_item', 'payment', 'safety', 'other'] as const;
@@ -31,6 +32,7 @@ export class SupportService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly notifications: NotificationsService,
+    private readonly audit: AuditService,
   ) {}
 
   /** Signalement d'incident (ou autre demande) par un passager ou un chauffeur, éventuellement rattaché à une de ses courses. */
@@ -105,6 +107,7 @@ export class SupportService {
       .where(eq(supportTickets.id, ticketId))
       .returning();
     if (!ticket) throw Errors.notFound('Ticket');
+    void this.audit.recordSafe(adminId, { action: 'ticket.update', entity: 'ticket', entityId: ticketId, details: { status } });
     void this.notifications.notify(ticket.reporterId, 'support.ticket_updated', { status }, { ticketId: ticket.id });
     return ticket;
   }

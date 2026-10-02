@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 import { DB, type Db } from './db/db.js';
 import { InfraModule, REDIS } from './infra/infra.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
+import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { Public } from './modules/auth/auth.guard.js';
 import { DriversModule } from './modules/drivers/drivers.module.js';
@@ -32,7 +33,7 @@ class HealthController {
 }
 
 @Module({
-  imports: [InfraModule, AuthModule, NotificationsModule, UsersModule, DriversModule, MatchingModule, TripsModule, PlacesModule, RealtimeModule, SupportModule, AdminModule],
+  imports: [InfraModule, AuthModule, AuditModule, NotificationsModule, UsersModule, DriversModule, MatchingModule, TripsModule, PlacesModule, RealtimeModule, SupportModule, AdminModule],
   controllers: [HealthController],
 })
 export class AppModule {}

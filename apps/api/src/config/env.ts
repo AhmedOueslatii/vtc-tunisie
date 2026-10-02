@@ -31,6 +31,8 @@ const schema = z
     // Documents chauffeur : stockage privé local en dev (remplacer par un bucket S3 privé en production)
     STORAGE_DIR: z.string().default('./storage'),
     MAX_DOCUMENT_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+    // Durée de validité d'un lien signé vers un scan (secondes) : assez pour lire la fiche, pas pour partager le lien
+    DOCUMENT_LINK_TTL_S: z.coerce.number().int().min(30).max(3600).default(300),
     // Pièces à faire valider avant d'approuver un chauffeur (CSV ; vide = aucune, pour les tests manuels)
     // [À VALIDER] liste exacte exigée par la réglementation (bulletin n°3, etc.)
     DRIVER_REQUIRED_DOCUMENTS: z
