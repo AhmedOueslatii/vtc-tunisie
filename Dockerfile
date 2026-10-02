@@ -1,5 +1,5 @@
-# API (NestJS). Le contexte de build est la RACINE du dépôt (monorepo pnpm) :
-#   docker build -f apps/api/Dockerfile -t vtc-api .
+# API (NestJS), à la racine car Cloud Build attend /workspace/Dockerfile. Contexte = racine du monorepo pnpm :
+#   docker build -t vtc-api .
 FROM node:22-slim AS build
 RUN corepack enable
 WORKDIR /repo
