@@ -1,10 +1,12 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import type { Redis } from 'ioredis';
 import { and, desc, eq, isNull, ne } from 'drizzle-orm';
 import { jwtVerify, SignJWT } from 'jose';
 import { randomUUID } from 'node:crypto';
 import { randomToken, sha256 } from '../../common/crypto.js';
 import { AppError } from '../../common/errors.js';
 import { env } from '../../config/env.js';
+import { REDIS } from '../../infra/infra.module.js';
 import { DB, type Db } from '../../db/db.js';
 import { sessions, users } from '../../db/schema.js';
 
@@ -18,6 +20,9 @@ export interface TokenPair {
   accessTokenExpiresInS: number;
   refreshToken: string;
 }
+
+/** Marqueur posé à la suspension d'un compte (durée : celle d'un jeton d'accès) et retiré à la réactivation. */
+export const suspendedKey = (userId: string) => `suspended:${userId}`;
 
 const ISSUER = 'vtc-api';
 const AUDIENCE = 'vtc-apps';
@@ -33,7 +38,10 @@ const refreshInvalid = () => new AppError('REFRESH_INVALID', 'Session invalide, 
 export class TokensService {
   private readonly secret = new TextEncoder().encode(env().JWT_ACCESS_SECRET);
 
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(REDIS) private readonly redis: Redis,
+  ) {}
 
   async issue(user: AuthUser, userAgent?: string, familyId: string = randomUUID()): Promise<TokenPair> {
     const { JWT_ACCESS_TTL_S, REFRESH_TTL_DAYS } = env();
@@ -58,13 +66,20 @@ export class TokensService {
   }
 
   async verifyAccess(token: string): Promise<AuthUser> {
+    let user: AuthUser;
     try {
       const { payload } = await jwtVerify(token, this.secret, { issuer: ISSUER, audience: AUDIENCE });
       if (!payload.sub) throw new Error('sub manquant');
-      return { id: payload.sub, isAdmin: payload.adm === true };
+      user = { id: payload.sub, isAdmin: payload.adm === true };
     } catch {
       throw new AppError('TOKEN_INVALID', 'Jeton invalide ou expiré', HttpStatus.UNAUTHORIZED);
     }
+    // Un jeton d'accès reste valide 15 min : la suspension pose un marqueur Redis pour couper l'accès immédiatement.
+    // Au-delà (marqueur expiré ou Redis vidé), le statut en base arrête le renouvellement de session.
+    if (await this.redis.exists(suspendedKey(user.id))) {
+      throw new AppError('ACCOUNT_SUSPENDED', 'Compte suspendu', HttpStatus.FORBIDDEN);
+    }
+    return user;
   }
 
   /**

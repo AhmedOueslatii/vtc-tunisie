@@ -163,6 +163,11 @@ Admin
   GET  /v1/admin/pricing/rules | PATCH /v1/admin/pricing/rules/:id   tarification (millimes) ; modification journalisée, la règle par défaut ne peut pas être désactivée
   GET  /v1/admin/stats/overview?days=7|30|90                 activité en direct + indicateurs et courbe quotidienne (jours calendaires à Tunis)
   GET  /v1/admin/audit?entity&limit&cursor                   journal des actions admin (qui, quoi, avant/après)
+  GET  /v1/admin/users?q&role&status&limit&cursor            recherche (nom ou téléphone), profil passager/chauffeur/admin, statut
+  GET  /v1/admin/users/:id                                   fiche : statut, motif, nombre de courses, course en cours
+  POST /v1/admin/users/:id/suspend { reason } | /reactivate  suspension immédiate (refusée pendant une course, pour un admin, pour soi-même)
+  GET  /v1/admin/exports/trips.csv?from&to                   courses de la période (jours à Tunis, 366 max) ; journalisé
+  GET  /v1/admin/exports/driver-earnings.csv?from&to         encaissé, commission, net, règlements et dette par chauffeur ; journalisé
   GET  /v1/admin/wallets/debts                               chauffeurs endettés, du plus au moins endetté, avec le plafond
   GET  /v1/admin/drivers/:id/wallet                          solde et mouvements d'un chauffeur
   POST /v1/admin/drivers/:id/wallet/settlements { amount, note? }   règlement d'une dette (jamais au-delà de la dette)

@@ -37,6 +37,11 @@ export class RealtimeEmitter {
   toUser(userId: string, event: string, payload: unknown): void {
     this.emitter.to(`user:${userId}`).emit(event, payload);
   }
+
+  /** Ferme toutes les connexions temps réel de l'utilisateur, sur toutes les instances. */
+  disconnectUser(userId: string): void {
+    this.emitter.in(`user:${userId}`).disconnectSockets(true);
+  }
 }
 
 @Injectable()

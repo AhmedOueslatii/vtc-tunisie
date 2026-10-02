@@ -819,6 +819,185 @@ describe('parcours passager ↔ chauffeur', () => {
     expect(page2.body.items[0].id).toBeLessThan(page1.body.items[1].id);
   });
 
+  it('exports CSV : courses et gains chauffeurs, lisibles par Excel, tracés, sans injection de formule', async () => {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Tunis' }).format(new Date());
+    const get = (path: string, token = admin.token) => fetch(`${API}/v1${path}`, { headers: { authorization: `Bearer ${token}` } });
+    // Montant en millimes → « 21,400 » (dinars, virgule décimale), comme dans le fichier
+    const dt = (m: number) => `${m < 0 ? '-' : ''}${Math.floor(Math.abs(m) / 1000)},${String(Math.abs(m) % 1000).padStart(3, '0')}`;
+    const parse = (csv: string) => csv.trimEnd().split('\r\n').map((line) => line.split(';'));
+
+    // Droits et période
+    expect((await get(`/admin/exports/trips.csv?from=${today}&to=${today}`, passenger.token)).status).toBe(403);
+    expect((await get(`/admin/exports/trips.csv?from=${today}`)).status).toBe(400);
+    expect((await get('/admin/exports/trips.csv?from=2026-10-05&to=2026-10-01')).status).toBe(400); // dates inversées
+    expect((await get('/admin/exports/trips.csv?from=2024-01-01&to=2026-01-01')).status).toBe(400); // plus de 366 jours
+    expect((await get(`/admin/exports/trips.csv?from=pas-une-date&to=${today}`)).status).toBe(400);
+
+    // Une adresse saisie par un utilisateur et commençant par « = » ou « @ » ne doit pas devenir une formule dans Excel
+    const estimate = await call('POST', '/trips/estimate', passenger.token, {
+      pickup: PICKUP,
+      dropoff: LA_MARSA,
+      pickupAddress: '=1+1',
+      dropoffAddress: '@SUM(A1)',
+    });
+    const trap = await call('POST', '/trips', passenger.token, { quoteId: estimate.body.quoteId });
+    await call('POST', `/trips/${trap.body.id}/cancel`, passenger.token, {});
+
+    const res = await get(`/admin/exports/trips.csv?from=${today}&to=${today}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    expect(res.headers.get('content-disposition')).toContain(`courses_${today}_${today}.csv`);
+    // `fetch` retire le BOM du texte décodé : on le vérifie sur les octets (Excel lit alors les accents sans assistant d'import)
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const [header, ...rows] = parse(bytes.toString('utf8').slice(1));
+    expect(header).toContain('Prix final (DT)');
+    expect(header!.join(';')).not.toMatch(/[Tt]éléphone/); // pas de numéro de passager dans cet export
+
+    const { id, price } = completedTrip;
+    const bps = ((await call('GET', '/admin/pricing/rules', admin.token)).body as any[]).find((r) => r.category === 'standard' && r.zone === null)
+      .commissionBps as number;
+    const mine = rows.find((r) => r[0] === id)!;
+    expect(mine[3]).toBe('Terminée');
+    expect(mine[6]).toBe(driver.userId);
+    expect(mine[7]).toBe(passenger.userId);
+    expect(mine.slice(11, 17)).toEqual([dt(price), dt(price), String(bps / 100).replace('.', ','), dt(Math.round((price * bps) / 10_000)), 'Espèces', 'Encaissé']);
+    const cancelled = rows.find((r) => r[0] === trap.body.id)!;
+    expect(cancelled[3]).toBe('Annulée par le passager');
+    expect(cancelled.slice(8, 10)).toEqual(["'=1+1", "'@SUM(A1)"]);
+
+    // Gains par chauffeur : mêmes chiffres que le portefeuille du chauffeur
+    const earnings = await get(`/admin/exports/driver-earnings.csv?from=${today}&to=${today}`);
+    expect(earnings.status).toBe(200);
+    expect(earnings.headers.get('content-disposition')).toContain(`gains-chauffeurs_${today}_${today}.csv`);
+    const [, ...driverRows] = parse(await earnings.text()); // texte décodé : le BOM est déjà retiré
+    const line = driverRows.find((r) => r[0] === driver.userId)!;
+    const wallet = (await call('GET', '/drivers/me/wallet?days=7', driver.token)).body;
+    const settled = (wallet.transactions.items as any[]).filter((t) => t.type === 'settlement').reduce((sum, t) => sum + t.amount, 0);
+    expect(line.slice(3)).toEqual([
+      String(wallet.earnings.trips),
+      dt(wallet.earnings.gross),
+      dt(wallet.earnings.commission),
+      dt(wallet.earnings.net),
+      dt(settled),
+      dt(wallet.debt),
+    ]);
+
+    // Chaque export est tracé, avec la période et le nombre de lignes
+    const audit = ((await call('GET', '/admin/audit?entity=export&limit=10', admin.token)).body.items as any[]).filter((e) => e.details.from === today);
+    expect(audit.find((e) => e.action === 'export.trips')?.details).toMatchObject({ from: today, to: today, rows: rows.length });
+    expect(audit.find((e) => e.action === 'export.driver_earnings')?.details).toMatchObject({ rows: driverRows.length });
+  });
+
+  it('suspension : garde-fous, effet immédiat sur une session ouverte, réactivation', async () => {
+    const suspend = (id: string, reason?: string) =>
+      call('POST', `/admin/users/${id}/suspend`, admin.token, reason === undefined ? {} : { reason });
+    const reactivate = (id: string) => call('POST', `/admin/users/${id}/reactivate`, admin.token);
+
+    // Droits et garde-fous
+    expect((await call('POST', `/admin/users/${passenger.userId}/suspend`, passenger.token, { reason: 'test' })).status).toBe(403);
+    expect((await suspend(admin.userId, 'moi-même')).body.code).toBe('CANNOT_SUSPEND_SELF');
+    expect((await suspend('00000000-0000-4000-8000-000000000000', 'inconnu')).status).toBe(404);
+
+    const db = new pg.Client({ connectionString: process.env.DATABASE_URL ?? 'postgres://vtc:vtc@localhost:5433/vtc' });
+    await db.connect();
+    const otherAdmin = await login(randomMobile());
+    try {
+      await db.query('UPDATE users SET is_admin = true WHERE id = $1', [otherAdmin.userId]);
+      expect((await suspend(otherAdmin.userId, 'test')).body.code).toBe('CANNOT_SUSPEND_ADMIN');
+    } finally {
+      await db.query('UPDATE users SET is_admin = false WHERE id = $1', [otherAdmin.userId]);
+      await db.end();
+    }
+
+    // Un passager connecté, avec une course en cours
+    const victimPhone = randomMobile();
+    const victim = await login(victimPhone);
+    const victimSocket = await connect(victim.token);
+    const closed = new Promise<void>((resolve) => victimSocket.once('disconnect', () => resolve()));
+    expect((await suspend(victim.userId)).status).toBe(400); // motif obligatoire
+    expect((await suspend(victim.userId, 'ab')).status).toBe(400); // trop court
+
+    const estimate = await call('POST', '/trips/estimate', victim.token, { pickup: PICKUP, dropoff: LA_MARSA });
+    const trip = await call('POST', '/trips', victim.token, { quoteId: estimate.body.quoteId });
+    const refused = await suspend(victim.userId, 'Comportement abusif');
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ code: 'USER_HAS_ACTIVE_TRIP', details: { tripId: trip.body.id } });
+    await call('POST', `/trips/${trip.body.id}/cancel`, victim.token, {});
+
+    // Suspension : tout s'arrête tout de suite, y compris le jeton d'accès encore valide et la connexion en direct
+    const done = await suspend(victim.userId, 'Comportement abusif');
+    expect(done.status).toBe(200);
+    expect(done.body).toMatchObject({ status: 'suspended', suspensionReason: 'Comportement abusif', activeTripId: null });
+    expect((await suspend(victim.userId, 'encore')).body.code).toBe('ALREADY_SUSPENDED');
+
+    const blocked = await call('GET', '/me', victim.token);
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.code).toBe('ACCOUNT_SUSPENDED');
+    expect((await call('POST', '/auth/refresh', undefined, { refreshToken: victim.refreshToken })).status).toBe(401);
+    await closed; // la connexion temps réel ouverte a été fermée par le serveur
+    await expect(connect(victim.token)).rejects.toBeTruthy();
+
+    const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380');
+    const clearOtpLimits = async () => {
+      await redis.del(`otp:cooldown:${victimPhone}`, `otp:rl:phone:${victimPhone}`);
+    };
+    await clearOtpLimits();
+    expect((await call('POST', '/auth/otp/request', undefined, { phone: victimPhone })).status).toBe(202);
+    const relogin = await call('POST', '/auth/otp/verify', undefined, { phone: victimPhone, code: OTP });
+    expect(relogin.status).toBe(403);
+    expect(relogin.body.code).toBe('ACCOUNT_SUSPENDED');
+
+    // Visible et retrouvable côté admin ; les caractères spéciaux d'une recherche sont cherchés tels quels
+    expect((await call('GET', '/admin/users', passenger.token)).status).toBe(403);
+    const spaced = `${victimPhone.slice(0, 4)} ${victimPhone.slice(4, 6)} ${victimPhone.slice(6, 9)} ${victimPhone.slice(9)}`;
+    const found = await call('GET', `/admin/users?status=suspended&q=${encodeURIComponent(spaced)}`, admin.token);
+    expect(found.body.items.map((u: any) => u.id)).toEqual([victim.userId]);
+    expect(found.body.items[0]).toMatchObject({ suspensionReason: 'Comportement abusif', driverStatus: null });
+    expect((await call('GET', `/admin/users?q=${encodeURIComponent('%')}`, admin.token)).body.items).toEqual([]);
+    const drivers = (await call('GET', '/admin/users?role=driver&limit=50', admin.token)).body.items as any[];
+    expect(drivers.map((u) => u.id)).toContain(driver.userId);
+    expect(drivers.every((u) => u.driverStatus)).toBe(true);
+    const passengers = (await call('GET', '/admin/users?role=passenger&limit=50', admin.token)).body.items as any[];
+    expect(passengers.map((u) => u.id)).not.toContain(driver.userId);
+    const page1 = await call('GET', '/admin/users?limit=1', admin.token);
+    expect(page1.body.nextCursor).toBeTruthy();
+    expect((await call('GET', `/admin/users?limit=1&cursor=${encodeURIComponent(page1.body.nextCursor)}`, admin.token)).body.items[0].id).not.toBe(
+      page1.body.items[0].id,
+    );
+
+    // Réactivation : l'ancien jeton refonctionne, les sessions révoquées restent mortes, une nouvelle connexion est possible
+    expect((await call('POST', `/admin/users/${victim.userId}/reactivate`, passenger.token)).status).toBe(403);
+    expect((await reactivate(victim.userId)).body).toMatchObject({ status: 'active', suspensionReason: null });
+    expect((await reactivate(victim.userId)).body.code).toBe('NOT_SUSPENDED');
+    expect((await call('GET', '/me', victim.token)).status).toBe(200);
+    expect((await call('POST', '/auth/refresh', undefined, { refreshToken: victim.refreshToken })).status).toBe(401);
+    await clearOtpLimits();
+    await redis.quit();
+    const back = await login(victimPhone);
+    const notices = (await call('GET', '/notifications?limit=10', back.token)).body.items.map((n: any) => n.type);
+    expect(notices).toEqual(expect.arrayContaining(['account.suspended', 'account.reactivated']));
+
+    const audit = (await call('GET', '/admin/audit?entity=user&limit=10', admin.token)).body.items as any[];
+    expect(audit.find((e) => e.action === 'user.suspend' && e.entityId === victim.userId)?.details).toEqual({ reason: 'Comportement abusif' });
+    expect(audit.find((e) => e.action === 'user.reactivate' && e.entityId === victim.userId)).toBeTruthy();
+
+    // Un chauffeur en ligne est mis hors ligne, et n'est pas remis en ligne tout seul à la réactivation
+    expect((await call('GET', '/drivers/me', driver.token)).body.presence.status).toBe('online');
+    const suspendedDriver = await suspend(driver.userId, 'Vérification en cours (test)');
+    expect(suspendedDriver.body).toMatchObject({ status: 'suspended', driver: { status: 'approved' } });
+    expect((await call('GET', '/drivers/me', driver.token)).status).toBe(403);
+    expect((await reactivate(driver.userId)).body.status).toBe('active');
+    expect((await call('GET', '/drivers/me', driver.token)).body.presence).toBeNull();
+
+    // Remise en état pour la suite : la suspension a fermé la connexion temps réel du chauffeur
+    driverSocket.close();
+    driverSocket = await connect(driver.token);
+    expect((await call('POST', '/drivers/me/availability', driver.token, { online: true })).status).toBe(200);
+    await driverSocket.emitWithAck('driver:location', { ...TUNIS_CENTRE, ts: Date.now() });
+    victimSocket.close();
+  });
+
   it('refresh token : rotation puis déconnexion', async () => {
     const rotated = await call('POST', '/auth/refresh', undefined, { refreshToken: passenger.refreshToken });
     expect(rotated.status).toBe(200);

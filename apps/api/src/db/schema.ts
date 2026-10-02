@@ -102,6 +102,9 @@ export const users = pgTable('users', {
   locale: localeEnum('locale').notNull().default('fr'),
   status: userStatusEnum('status').notNull().default('active'),
   isAdmin: boolean('is_admin').notNull().default(false),
+  /** Renseignés uniquement tant que le compte est suspendu. */
+  suspensionReason: text('suspension_reason'),
+  suspendedAt: ts('suspended_at'),
   ratingAvg: numeric('rating_avg', { precision: 3, scale: 2 }),
   ratingCount: integer('rating_count').notNull().default(0),
   createdAt: createdAt(),

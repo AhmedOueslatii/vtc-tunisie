@@ -28,9 +28,11 @@ import { AuditService } from '../audit/audit.module.js';
 import { NotificationsService } from '../notifications/notifications.module.js';
 import { TripsModule } from '../trips/trips.module.js';
 import { TripsService } from '../trips/trips.service.js';
+import { AdminExportsController } from './admin-exports.controller.js';
 import { AdminPricingController } from './admin-pricing.controller.js';
 import { AdminStatsController } from './admin-stats.controller.js';
 import { AdminTripsController } from './admin-trips.controller.js';
+import { AdminUsersController, AdminUsersService } from './admin-users.controller.js';
 
 const rejectSchema = z.object({ reason: z.string().min(3).max(500) });
 const linksSchema = z.object({ documentIds: z.array(z.uuid()).min(1).max(20).optional() });
@@ -179,6 +181,7 @@ export class AdminController {
 
 @Module({
   imports: [DriversModule, TripsModule],
-  controllers: [AdminController, AdminPricingController, AdminTripsController, AdminStatsController],
+  controllers: [AdminController, AdminPricingController, AdminTripsController, AdminStatsController, AdminUsersController, AdminExportsController],
+  providers: [AdminUsersService],
 })
 export class AdminModule {}

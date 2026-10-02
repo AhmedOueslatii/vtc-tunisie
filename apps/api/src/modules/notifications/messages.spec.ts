@@ -25,9 +25,8 @@ describe('messages de notification', () => {
 
   it('les offres ne vont que sur push ; les événements critiques sont doublés par SMS', () => {
     expect(DEFINITIONS['trip.offer']).toMatchObject({ inbox: false, sms: false });
-    for (const type of ['driver.approved', 'driver.rejected', 'trip.cancelled_by_driver', 'wallet.debt_limit'] as const) {
-      expect(DEFINITIONS[type].sms).toBe(true);
-    }
-    expect(NOTIFICATION_TYPES.filter((t) => DEFINITIONS[t].sms)).toHaveLength(4);
+    const critical = ['driver.approved', 'driver.rejected', 'trip.cancelled_by_driver', 'wallet.debt_limit', 'account.suspended', 'account.reactivated'] as const;
+    for (const type of critical) expect(DEFINITIONS[type].sms).toBe(true);
+    expect(NOTIFICATION_TYPES.filter((t) => DEFINITIONS[t].sms)).toHaveLength(critical.length);
   });
 });

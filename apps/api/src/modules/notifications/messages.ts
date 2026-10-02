@@ -15,6 +15,8 @@ export const NOTIFICATION_TYPES = [
   'wallet.debt_warning',
   'wallet.debt_limit',
   'wallet.settlement',
+  'account.suspended',
+  'account.reactivated',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -151,6 +153,22 @@ export const DEFINITIONS: Record<NotificationType, Definition> = {
         title: 'تم إيقاف الحساب: بلغ الدين الحد الأقصى',
         body: `عليك ${dt(Number(p.debt), 'ar')}. سدّد الدين لتعود إلى العمل.`,
       },
+    }),
+  },
+  'account.suspended': {
+    inbox: true,
+    sms: true,
+    text: () => ({
+      fr: { title: 'Compte suspendu', body: 'Votre compte a été suspendu. Contactez le support pour en savoir plus.' },
+      ar: { title: 'تم تعليق الحساب', body: 'تم تعليق حسابك. تواصل مع الدعم لمعرفة المزيد.' },
+    }),
+  },
+  'account.reactivated': {
+    inbox: true,
+    sms: true,
+    text: () => ({
+      fr: { title: 'Compte réactivé', body: 'Votre compte est de nouveau actif. Vous pouvez vous reconnecter.' },
+      ar: { title: 'تمت إعادة تفعيل الحساب', body: 'حسابك نشط من جديد. يمكنك تسجيل الدخول مجددًا.' },
     }),
   },
   'wallet.settlement': {
