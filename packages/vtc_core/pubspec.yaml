@@ -1,0 +1,27 @@
+name: vtc_core
+description: "Socle commun des apps VTC Tunisie : client d'API, temps réel, langues fr/ar, formats, cartes."
+version: 0.0.1
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.10.8
+  flutter: ">=3.38.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  http: ^1.2.0
+  socket_io_client: ^3.0.0
+  shared_preferences: ^2.3.0
+  flutter_map: ^8.0.0
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:

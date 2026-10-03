@@ -1,0 +1,26 @@
+name: vtc_passenger
+description: "App passager VTC Tunisie"
+publish_to: 'none'
+version: 1.0.0+1
+resolution: workspace
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  vtc_core: any
+  flutter_map: ^8.0.0
+  latlong2: ^0.9.1
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

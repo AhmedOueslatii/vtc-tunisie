@@ -1,0 +1,12 @@
+name: vtc_workspace
+description: Espace de travail Dart/Flutter du projet VTC Tunisie (apps passager et chauffeur, socle commun).
+publish_to: none
+
+environment:
+  sdk: ^3.10.8
+
+# Une seule résolution des dépendances pour les trois projets : mêmes versions partout, un seul `flutter pub get`.
+workspace:
+  - packages/vtc_core
+  - apps/passenger_app
+  - apps/driver_app

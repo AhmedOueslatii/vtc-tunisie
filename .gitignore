@@ -8,3 +8,10 @@ storage/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Dart / Flutter
+.dart_tool/
+build/
+.flutter-plugins-dependencies
+*.iml
+apps/flutter-e2e/shots/
