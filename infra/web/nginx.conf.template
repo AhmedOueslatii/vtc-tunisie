@@ -1,0 +1,13 @@
+server {
+  listen ${PORT};
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # Les fichiers compilés ont des noms stables : on force la revalidation pour que chaque déploiement soit pris en compte
+  add_header Cache-Control "no-cache";
+  add_header X-Content-Type-Options "nosniff";
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}
