@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:vtc_core/vtc_core.dart';
 
+import 'documents_screen.dart';
 import 'driver_controller.dart';
 import 'onboarding_screen.dart';
 import 'wallet_screen.dart';
@@ -25,7 +26,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = widget.controller;
     return Scaffold(
       appBar: AppBar(
-        title: Text(_tab == 0 ? s.t('d.tabHome') : s.t('d.tabWallet')),
+        title: Text(switch (_tab) { 0 => s.t('d.tabHome'), 1 => s.t('d.tabDocs'), _ => s.t('d.tabWallet') }),
         actions: [
           TextButton(key: const ValueKey('lang'), onPressed: widget.locale.toggle, child: Text(s.t('common.language'))),
           IconButton(key: const ValueKey('logout'), tooltip: s.t('common.logout'), icon: const Icon(Icons.logout), onPressed: widget.session.logout),
@@ -36,7 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (context, _) {
           if (!c.profileLoaded) return const Center(child: CircularProgressIndicator());
           if (c.profile == null) return OnboardingScreen(controller: c);
-          return _tab == 0 ? _HomeTab(controller: c) : WalletScreen(controller: c);
+          return switch (_tab) { 0 => _HomeTab(controller: c), 1 => DocumentsScreen(controller: c), _ => WalletScreen(controller: c) };
         },
       ),
       bottomNavigationBar: NavigationBar(
@@ -44,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: [
           NavigationDestination(icon: const Icon(Icons.directions_car_outlined), label: s.t('d.tabHome')),
+          NavigationDestination(icon: const Icon(Icons.description_outlined), label: s.t('d.tabDocs')),
           NavigationDestination(icon: const Icon(Icons.account_balance_wallet_outlined), label: s.t('d.tabWallet')),
         ],
       ),

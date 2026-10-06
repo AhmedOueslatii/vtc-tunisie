@@ -15,6 +15,7 @@ dependencies:
   vtc_core: any
   flutter_map: ^8.0.0
   latlong2: ^0.9.1
+  file_picker: ^10.0.0
   cupertino_icons: ^1.0.8
 
 dev_dependencies:

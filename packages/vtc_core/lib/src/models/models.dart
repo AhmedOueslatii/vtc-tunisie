@@ -351,6 +351,34 @@ class DriverProfile {
   final bool online;
 }
 
+class DriverDocument {
+  const DriverDocument({required this.id, required this.type, required this.status, required this.expiresAt, required this.rejectionReason});
+
+  factory DriverDocument.fromJson(Map<String, dynamic> json) => DriverDocument(
+        id: json['id'] as String,
+        type: json['type'] as String,
+        status: json['status'] as String,
+        expiresAt: json['expiresAt'] as String?,
+        rejectionReason: json['rejectionReason'] as String?,
+      );
+
+  final String id;
+
+  /// `cin`, `driving_license`, `vehicle_registration`, `insurance`…
+  final String type;
+
+  /// `pending`, `approved`, `rejected` ou `expired`.
+  final String status;
+  final String? expiresAt;
+  final String? rejectionReason;
+
+  /// Pièces que l'API exige avant de valider un chauffeur (configurable côté serveur).
+  static const required = ['cin', 'driving_license', 'vehicle_registration', 'insurance'];
+
+  /// L'assurance a une date de fin de validité à saisir ; les autres pièces non.
+  static bool needsExpiry(String type) => type == 'insurance';
+}
+
 class WalletTransaction {
   const WalletTransaction({required this.id, required this.type, required this.amount, required this.createdAt, required this.note});
 

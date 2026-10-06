@@ -232,6 +232,38 @@ class DriverController extends ChangeNotifier {
     loadProfile();
   }
 
+  // ─── Documents ─────────────────────────────────────────────────────────────
+
+  List<DriverDocument> documents = const [];
+
+  Future<void> loadDocuments() async {
+    await _guard(() async {
+      final data = await api.get('/drivers/me/documents') as List;
+      documents = [for (final d in data) DriverDocument.fromJson(d as Json)];
+    });
+  }
+
+  /// Envoie un scan. `true` si l'API l'a accepté ; le statut du dossier est relu ensuite (il passe en vérification
+  /// quand toutes les pièces obligatoires sont là).
+  Future<bool> uploadDocument({required String type, required List<int> bytes, required String filename, String? expiresAt}) async {
+    var ok = false;
+    await _guard(() async {
+      await api.upload(
+        '/drivers/me/documents',
+        fields: {'type': type, if (expiresAt != null && expiresAt.isNotEmpty) 'expiresAt': expiresAt},
+        fileField: 'file',
+        bytes: bytes,
+        filename: filename,
+      );
+      ok = true;
+    });
+    if (ok) {
+      await loadDocuments();
+      await loadProfile();
+    }
+    return ok;
+  }
+
   // ─── Portefeuille ──────────────────────────────────────────────────────────
 
   Future<void> loadWallet({int days = 30}) async {
@@ -252,6 +284,12 @@ class DriverController extends ChangeNotifier {
       busy = false;
       _notify();
     }
+  }
+
+  /// Erreur détectée côté app, avant tout appel (saisie incomplète).
+  void fail(String code) {
+    error = ApiException(400, code, code);
+    _notify();
   }
 
   void clearError() {

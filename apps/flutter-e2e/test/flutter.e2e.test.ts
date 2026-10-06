@@ -100,11 +100,19 @@ async function createApprovedDriver(phone: string, name: string) {
  */
 async function enter(page: Page, name: string | RegExp, value: string) {
   const box = page.getByRole('textbox', { name });
-  await box.click();
-  await page.keyboard.press('End');
-  for (let i = (await box.inputValue()).length; i > 0; i--) await page.keyboard.press('Backspace');
-  await page.keyboard.type(value, { delay: 25 });
-  await ui(box).toHaveValue(value, { timeout: 5_000 });
+  // Juste après un changement de champ, Flutter peut perdre la première touche : on recommence si la valeur est fausse
+  for (let attempt = 1; ; attempt++) {
+    await box.click();
+    await page.keyboard.press('End');
+    for (let i = (await box.inputValue()).length; i > 0; i--) await page.keyboard.press('Backspace');
+    await page.keyboard.type(value, { delay: 40 });
+    try {
+      await ui(box).toHaveValue(value, { timeout: 2_000 });
+      return;
+    } catch (e) {
+      if (attempt >= 3) throw e;
+    }
+  }
 }
 
 /** Connexion par code SMS, comme un utilisateur. */
@@ -274,5 +282,75 @@ describe('apps Flutter : passager et chauffeur', () => {
   it('la déconnexion ramène à la connexion', async () => {
     await driver.getByRole('button', { name: 'Se déconnecter' }).click();
     await ui(driver.getByRole('button', { name: 'Recevoir le code' })).toBeVisible(WAIT);
+  });
+});
+
+describe('app chauffeur : candidature et envoi des documents', () => {
+  let browser: Browser;
+  let page: Page;
+  const phone = mobile();
+
+  beforeAll(async () => {
+    const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380');
+    const keys = [...(await redis.keys('otp:cooldown:*')), ...(await redis.keys('otp:rl:*'))];
+    if (keys.length) await redis.del(...keys);
+    await redis.quit();
+    browser = await chromium.launch();
+    page = await (await browser.newContext({ viewport: { width: 460, height: 900 } })).newPage();
+    await page.goto(DRIVER_APP);
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+  });
+
+  it("s'inscrit comme chauffeur puis arrive sur « dossier incomplet »", async () => {
+    await signIn(page, phone);
+    await shows(page, 'Devenir chauffeur');
+    await enter(page, /Numéro de CIN/, digits(8));
+    await enter(page, /Numéro de permis/, `P${digits(8)}`);
+    await enter(page, /Fin de validité du permis/, '2030-01-01');
+    await enter(page, 'Marque', 'Kia');
+    await enter(page, 'Modèle', 'Picanto');
+    await enter(page, 'Couleur', 'Blanc');
+    await enter(page, 'Année', '2021');
+    await enter(page, 'Immatriculation', `${digits(3)} TU ${digits(4)}`);
+    await page.getByRole('button', { name: 'Envoyer ma candidature' }).click();
+    await shows(page, 'Dossier incomplet : envoyez vos documents.');
+  });
+
+  it('envoie les quatre pièces, le dossier passe en vérification', async () => {
+    await page.getByRole('tab', { name: 'Documents' }).click();
+    await shows(page, 'Mes documents');
+    await enter(page, /Assurance · Fin de validité/, '2030-01-01');
+
+    for (let i = 0; i < 4; i++) {
+      // Le navigateur automatisé ne livre pas toujours le fichier au sélecteur : on recommence jusqu'à l'envoi effectif
+      if (i > 0) {
+        // Le sélecteur de fichier du navigateur automatisé ne se rouvre pas dans la même page : on recharge (session conservée)
+        await page.reload();
+        await page.getByRole('tab', { name: 'Documents' }).click();
+        await shows(page, 'Mes documents');
+        if (i === 3) await enter(page, /Assurance · Fin de validité/, '2030-01-01');
+      }
+      for (let attempt = 1; ; attempt++) {
+        const [chooser] = await Promise.all([page.waitForEvent('filechooser', { timeout: 10_000 }), page.getByRole('button', { name: 'Envoyer' }).first().click()]);
+        await chooser.setFiles({ name: 'scan.png', mimeType: 'image/png', buffer: png() });
+        try {
+          await ui(page.getByText('Document envoyé.').first()).toBeVisible({ timeout: 8_000 });
+          break;
+        } catch (e) {
+          if (attempt >= 3) throw e;
+        }
+      }
+    }
+    // Chaque ligne annonce son statut en toutes lettres
+    for (const piece of [/Carte d.identité.*En cours de vérification/, /Permis de conduire En cours de vérification/, /Carte grise En cours de vérification/, /Assurance En cours de vérification/]) {
+      await ui(page.getByRole('group', { name: piece })).toBeVisible(WAIT);
+    }
+
+    // Côté serveur : les quatre pièces sont enregistrées et le dossier est en vérification
+    await page.getByRole('tab', { name: 'Accueil' }).click();
+    await shows(page, 'Dossier en cours de vérification.');
   });
 });

@@ -75,6 +75,39 @@ class ApiClient {
 
   Future<dynamic> delete(String path, {Map<String, Object?>? query}) => _send('DELETE', path, query: query);
 
+  /// Envoi d'un fichier en multipart (scans de documents). Même renouvellement de session que les autres appels.
+  Future<dynamic> upload(
+    String path, {
+    required Map<String, String> fields,
+    required String fileField,
+    required List<int> bytes,
+    required String filename,
+  }) async {
+    await _load();
+    Future<http.Response> attempt() async {
+      final token = _tokens?.accessToken;
+      if (token == null) throw const ApiException(401, 'UNAUTHORIZED', 'Authentification requise');
+      final request = http.MultipartRequest('POST', Uri.parse('${config.baseUrl}$path'))
+        ..headers.addAll({'accept': 'application/json', 'authorization': 'Bearer $token'})
+        ..fields.addAll(fields)
+        ..files.add(http.MultipartFile.fromBytes(fileField, bytes, filename: filename));
+      try {
+        // Un scan peut être lourd sur un réseau mobile : délai plus large que pour un appel JSON
+        return await http.Response.fromStream(await _http.send(request).timeout(const Duration(seconds: 60)));
+      } on TimeoutException catch (e) {
+        throw ApiException.network(e);
+      } on http.ClientException catch (e) {
+        throw ApiException.network(e);
+      }
+    }
+
+    var response = await attempt();
+    if (response.statusCode == 401 && await _refresh()) response = await attempt();
+    final parsed = _parse(response);
+    if (response.statusCode >= 400) throw _error(response.statusCode, parsed);
+    return parsed;
+  }
+
   /// Renouvelle la session maintenant (le temps réel en a besoin quand son jeton a expiré). `false` si impossible.
   Future<bool> refreshNow() => _refresh();
 
