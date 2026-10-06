@@ -1,6 +1,6 @@
 name: CI
 
-# Deux tâches indépendantes : la vérification rapide (types, tests unitaires, build) et les parcours complets,
+# Trois tâches indépendantes : la vérification rapide (types, tests unitaires, build), Flutter et les parcours complets,
 # qui démarrent l'API avec PostGIS et Redis puis pilotent le back-office dans un vrai navigateur.
 on:
   push:
@@ -40,6 +40,35 @@ jobs:
           pnpm admin typecheck
           pnpm admin test
           pnpm admin build
+
+  flutter:
+    name: Flutter (analyse, tests, build web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.9
+          channel: stable
+          cache: true
+      # Espace de travail Dart à la racine : un seul `pub get` pour le paquet partagé et les deux apps
+      - run: flutter pub get
+
+      - name: Analyse statique
+        run: |
+          flutter analyze packages/vtc_core
+          flutter analyze apps/passenger_app
+          flutter analyze apps/driver_app
+
+      - name: Tests du paquet partagé
+        run: flutter test
+        working-directory: packages/vtc_core
+
+      - name: Compilation web des deux apps
+        run: |
+          (cd apps/passenger_app && flutter build web --release --no-web-resources-cdn)
+          (cd apps/driver_app && flutter build web --release --no-web-resources-cdn)
 
   e2e:
     name: Parcours complets (API et navigateur)
