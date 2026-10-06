@@ -16,6 +16,14 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     ports: ["6380:6379"]
     volumes: [redisdata:/data]
+  # Routage réel (profil voiture, extrait OSM Tunisie). Préparer les données une fois : cd infra/osrm && sh prepare.sh
+  # Puis : docker compose --profile routing up -d osrm  et ROUTING_PROVIDER=osrm OSRM_URL=http://localhost:5000
+  osrm:
+    profiles: ["routing"]
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    command: osrm-routed --algorithm mld /data/tunisia.osrm
+    ports: ["5000:5000"]
+    volumes: ["./infra/osrm:/data:ro"]
 volumes:
   pgdata:
   redisdata:
